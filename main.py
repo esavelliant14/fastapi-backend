@@ -14,7 +14,6 @@ from jnpr.junos.exception import ConnectError, ConnectRefusedError, ConnectAuthE
 
 load_dotenv()
 
-db = 'asd'
 DB_HOST = os.getenv("DB_HOST")
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS")
@@ -50,134 +49,272 @@ class ClientData(BaseModel):
 def receive_client(data: ClientData):
     # login ke device
     try:
-        with Device(host=data.hostname, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
+        with engine.begin() as conn:
+            router = conn.execute(
+                text("SELECT ip_address, logical_system FROM table_bwm_rtr WHERE hostname=:h LIMIT 1"),
+                {"h": data.hostname}
+            ).fetchone()
+
+        ip_device = router.ip_address
+        logical_system = router.logical_system
+
+        with Device(host=ip_device, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
+
+            if logical_system == "no":
             # filter config untuk interface spesifik
-            filter_xml = etree.XML(f'''
-            <configuration>
-              <interfaces>
-                <interface>
-                  <name>{data.interface}</name>
-                  <unit>
-                    <name>{data.unit}</name>
-                  </unit>
-                </interface>
-              </interfaces>
-            </configuration>
-            ''')
+                filter_xml = etree.XML(f'''
+                <configuration>
+                  <interfaces>
+                    <interface>
+                      <name>{data.interface}</name>
+                      <unit>
+                        <name>{data.unit}</name>
+                      </unit>
+                    </interface>
+                  </interfaces>
+                </configuration>
+                ''')
 
-            cfg = dev.rpc.get_config(filter_xml=filter_xml)
+                cfg = dev.rpc.get_config(filter_xml=filter_xml)
 
-            # cek unit ada?
-            unit_names = [unit.findtext('name') for unit in cfg.xpath('.//unit')]
-            if str(data.unit) not in unit_names:
-                # return {
-                #     "status": "failed",
-                #     "message": f"Unit {data.unit} was not found on interface {data.interface} at device {data.hostname}"
-                # }
-                return JSONResponse(
-                    status_code=404,
-                    content={
-                        "status":"failed",
-                        "message":f"Unit {data.unit} was not found on interface {data.interface} at {data.hostname}"    
+                # cek unit ada?
+                unit_names = [unit.findtext('name') for unit in cfg.xpath('.//unit')]
+                if str(data.unit) not in unit_names:
+                    # return {
+                    #     "status": "failed",
+                    #     "message": f"Unit {data.unit} was not found on interface {data.interface} at device {data.hostname}"
+                    # }
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "status":"failed",
+                            "message":f"Unit {data.unit} was not found on interface {data.interface} at {data.hostname}",
+                        }
+                    )
+
+                else:
+                    for unit in cfg.xpath('.//unit'):
+                        unit_name = unit.findtext('name')
+                        attr_unit = unit.get('inactive')
+                        if attr_unit:
+                            status_unit_1 = "Inactive"
+                        else:
+                            status_unit_1 = "Active"
+
+                        #check disable atau tidak
+                        if unit.find('disable') is not None:
+                            status_unit_2 = "Disable"
+                        else:
+                            status_unit_2 = "Enable"
+
+                        status_unit = f"{status_unit_1} | {status_unit_2}"
+                        #ip_list = [addr.text for addr in unit.xpath('family/inet/address/name')]
+                        #ip = ", ".join(ip_list) if ip_list else "None"
+                        ip_list = []
+                        for addr_el in unit.xpath('family/inet/address'):
+                            ip_addr = addr_el.findtext('name')
+                            inactive_attr = addr_el.get('inactive')
+                            if inactive_attr:  # ada attribute inactive
+                                ip_list.append(f"{ip_addr}(inactive)")
+                            else:
+                                ip_list.append(ip_addr)
+                        ip = ", ".join(ip_list) if ip_list else "None"
+
+                        #description
+                        description = unit.findtext('description')
+                        
+                    #     #status policer
+                        find_status_policer = unit.find('.//family/inet/policer')
+                        if find_status_policer is None:
+                            status_policer = "None"
+                        else:
+                            attr_policer = find_status_policer.get('inactive')
+                            if attr_policer:
+                                status_policer = "Inactive"
+                            else:
+                                status_policer = "Active"
+
+                    #     #status policer input
+                        find_status_input_policer = unit.find('.//family/inet/policer/input')
+                        if find_status_input_policer is None:
+                            status_input_policer = "None"
+                        else:
+                            attr_input_policer = find_status_input_policer.get('inactive')
+                            if attr_input_policer:
+                                status_input_policer = "Inactive"
+                            else:
+                                status_input_policer = "Active"
+
+                    #    #status policer output
+                        find_status_output_policer = unit.find('.//family/inet/policer/output')
+                        if find_status_output_policer is None:
+                            status_output_policer = "None"
+                        else:
+                            attr_output_policer = find_status_output_policer.get('inactive')
+                            if attr_output_policer:
+                                status_output_policer = "Inactive"
+                            else:
+                                status_output_policer = "Active"
+
+                    #     #value policer input & output
+                        raw_input_policer = unit.findtext('family/inet/policer/input')
+                        input_policer = raw_input_policer if raw_input_policer else "None"
+                        raw_output_policer = unit.findtext('family/inet/policer/output')
+                        output_policer = raw_output_policer if raw_output_policer else "None"
+                        
+                    #     #vlan_id
+                        vlan_id = unit.findtext('vlan-id')
+
+                    # jika semua ada
+                    return {
+                        "status": "success",
+                        "message": f"Interface {data.interface} unit {data.unit} found at device {data.hostname}. success to add",
+                        "hostname": data.hostname,
+                        "interface": data.interface,
+                        "unit": unit_name,
+                        "status_unit": status_unit,
+                        "description": description,
+                        "ip": ip,
+                        "vlan_id": vlan_id,
+                        "status_policer": status_policer,
+                        "status_input_policer": status_input_policer,
+                        "status_output_policer": status_output_policer,
+                        "input_policer": input_policer,
+                        "output_policer": output_policer,
                     }
-                )
-
             else:
-                for unit in cfg.xpath('.//unit'):
-                    unit_name = unit.findtext('name')
-                    attr_unit = unit.get('inactive')
-                    if attr_unit:
-                        status_unit_1 = "Inactive"
-                    else:
-                        status_unit_1 = "Active"
+                filter_xml = etree.XML(f'''
+                <configuration>
+                    <logical-systems>
+                        <name>{data.hostname}</name>
+                        <interfaces>
+                            <interface>
+                              <name>{data.interface}</name>
+                                <unit>
+                                    <name>{data.unit}</name>
+                                </unit>
+                            </interface>
+                      </interfaces>
+                    </logical-systems>
+                </configuration>
+                ''')
 
-                    #check disable atau tidak
-                    if unit.find('disable') is not None:
-                        status_unit_2 = "Disable"
-                    else:
-                        status_unit_2 = "Enable"
+                cfg = dev.rpc.get_config(filter_xml=filter_xml)
 
-                    status_unit = f"{status_unit_1} | {status_unit_2}"
-                    #ip_list = [addr.text for addr in unit.xpath('family/inet/address/name')]
-                    #ip = ", ".join(ip_list) if ip_list else "None"
-                    ip_list = []
-                    for addr_el in unit.xpath('family/inet/address'):
-                        ip_addr = addr_el.findtext('name')
-                        inactive_attr = addr_el.get('inactive')
-                        if inactive_attr:  # ada attribute inactive
-                            ip_list.append(f"{ip_addr}(inactive)")
+                # cek unit ada?
+                unit_names = [unit.findtext('name') for unit in cfg.xpath('.//unit')]
+                if str(data.unit) not in unit_names:
+                    # return {
+                    #     "status": "failed",
+                    #     "message": f"Unit {data.unit} was not found on interface {data.interface} at device {data.hostname}"
+                    # }
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "status":"failed",
+                            "message":f"Unit {data.unit} was not found on interface {data.interface} at {data.hostname}",
+                        }
+                    )
+
+                else:
+                    for unit in cfg.xpath('.//unit'):
+                        unit_name = unit.findtext('name')
+                        attr_unit = unit.get('inactive')
+                        if attr_unit:
+                            status_unit_1 = "Inactive"
                         else:
-                            ip_list.append(ip_addr)
-                    ip = ", ".join(ip_list) if ip_list else "None"
+                            status_unit_1 = "Active"
 
-                    #description
-                    description = unit.findtext('description')
-                    
-                #     #status policer
-                    find_status_policer = unit.find('.//family/inet/policer')
-                    if find_status_policer is None:
-                        status_policer = "None"
-                    else:
-                        attr_policer = find_status_policer.get('inactive')
-                        if attr_policer:
-                            status_policer = "Inactive"
+                        #check disable atau tidak
+                        if unit.find('disable') is not None:
+                            status_unit_2 = "Disable"
                         else:
-                            status_policer = "Active"
+                            status_unit_2 = "Enable"
 
-                #     #status policer input
-                    find_status_input_policer = unit.find('.//family/inet/policer/input')
-                    if find_status_input_policer is None:
-                        status_input_policer = "None"
-                    else:
-                        attr_input_policer = find_status_input_policer.get('inactive')
-                        if attr_input_policer:
-                            status_input_policer = "Inactive"
+                        status_unit = f"{status_unit_1} | {status_unit_2}"
+                        #ip_list = [addr.text for addr in unit.xpath('family/inet/address/name')]
+                        #ip = ", ".join(ip_list) if ip_list else "None"
+                        ip_list = []
+                        for addr_el in unit.xpath('family/inet/address'):
+                            ip_addr = addr_el.findtext('name')
+                            inactive_attr = addr_el.get('inactive')
+                            if inactive_attr:  # ada attribute inactive
+                                ip_list.append(f"{ip_addr}(inactive)")
+                            else:
+                                ip_list.append(ip_addr)
+                        ip = ", ".join(ip_list) if ip_list else "None"
+
+                        #description
+                        description = unit.findtext('description')
+                        
+                    #     #status policer
+                        find_status_policer = unit.find('.//family/inet/policer')
+                        if find_status_policer is None:
+                            status_policer = "None"
                         else:
-                            status_input_policer = "Active"
+                            attr_policer = find_status_policer.get('inactive')
+                            if attr_policer:
+                                status_policer = "Inactive"
+                            else:
+                                status_policer = "Active"
 
-                #    #status policer output
-                    find_status_output_policer = unit.find('.//family/inet/policer/output')
-                    if find_status_output_policer is None:
-                        status_output_policer = "None"
-                    else:
-                        attr_output_policer = find_status_output_policer.get('inactive')
-                        if attr_output_policer:
-                            status_output_policer = "Inactive"
+                    #     #status policer input
+                        find_status_input_policer = unit.find('.//family/inet/policer/input')
+                        if find_status_input_policer is None:
+                            status_input_policer = "None"
                         else:
-                            status_output_policer = "Active"
+                            attr_input_policer = find_status_input_policer.get('inactive')
+                            if attr_input_policer:
+                                status_input_policer = "Inactive"
+                            else:
+                                status_input_policer = "Active"
 
-                #     #value policer input & output
-                    raw_input_policer = unit.findtext('family/inet/policer/input')
-                    input_policer = raw_input_policer if raw_input_policer else "None"
-                    raw_output_policer = unit.findtext('family/inet/policer/output')
-                    output_policer = raw_output_policer if raw_output_policer else "None"
-                    
-                #     #vlan_id
-                    vlan_id = unit.findtext('vlan-id')
+                    #    #status policer output
+                        find_status_output_policer = unit.find('.//family/inet/policer/output')
+                        if find_status_output_policer is None:
+                            status_output_policer = "None"
+                        else:
+                            attr_output_policer = find_status_output_policer.get('inactive')
+                            if attr_output_policer:
+                                status_output_policer = "Inactive"
+                            else:
+                                status_output_policer = "Active"
 
-                # jika semua ada
-                return {
-                    "status": "success",
-                    "message": f"Interface {data.interface} unit {data.unit} found at device {data.hostname}. success to add",
-                    "hostname": dev.facts['hostname'],
-                    "interface": data.interface,
-                    "unit": unit_name,
-                    "status_unit": status_unit,
-                    "description": description,
-                    "ip": ip,
-                    "vlan_id": vlan_id,
-                    "status_policer": status_policer,
-                    "status_input_policer": status_input_policer,
-                    "status_output_policer": status_output_policer,
-                    "input_policer": input_policer,
-                    "output_policer": output_policer,
-                }
+                    #     #value policer input & output
+                        raw_input_policer = unit.findtext('family/inet/policer/input')
+                        input_policer = raw_input_policer if raw_input_policer else "None"
+                        raw_output_policer = unit.findtext('family/inet/policer/output')
+                        output_policer = raw_output_policer if raw_output_policer else "None"
+                        
+                    #     #vlan_id
+                        vlan_id = unit.findtext('vlan-id')
+
+                    # jika semua ada
+                    return {
+                        "status": "success",
+                        "message": f"Interface {data.interface} unit {data.unit} found at device {data.hostname}. success to add",
+                        "hostname": data.hostname,
+                        "interface": data.interface,
+                        "unit": unit_name,
+                        "status_unit": status_unit,
+                        "description": description,
+                        "ip": ip,
+                        "vlan_id": vlan_id,
+                        "status_policer": status_policer,
+                        "status_input_policer": status_input_policer,
+                        "status_output_policer": status_output_policer,
+                        "input_policer": input_policer,
+                        "output_policer": output_policer,
+                    }
+
+
     except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
             return JSONResponse(
                 status_code=504,
                 content={
                     "status":"failed",
-                    "message":f"Cannot reach device {data.hostname}: {str(e)}"    
+                    "message":f"Cannot reach device {data.hostname}: {str(e)}",
+                    "hostname": {data.hostname}
                 }
             )
 
@@ -186,7 +323,8 @@ def receive_client(data: ClientData):
                 status_code=504,
                 content={
                     "status":"failed",
-                    "message":f"Error anomaly device {data.hostname}: {str(e)}"    
+                    "message":f"Error anomaly device {data.hostname}: {str(e)}",
+                    "hostname": {data.hostname}   
                 }
             )
 
@@ -205,63 +343,126 @@ class PolicerData(BaseModel):
 @app.post("/receive-bw")
 def receive_bw(data: PolicerData):
     try:
+        with engine.begin() as conn:
+            router = conn.execute(
+                text("SELECT ip_address, logical_system FROM table_bwm_rtr WHERE hostname=:h LIMIT 1"),
+                {"h": data.hostname}
+            ).fetchone()
+
+        ip_device = router.ip_address
+        logical_system = router.logical_system
+
         # connect ke device
-        with Device(host=data.hostname, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
+        with Device(host=ip_device, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
             with Config(dev, mode="exclusive") as cfg:
-                # escape semua { } yang bagian config Juniper
-                policer_config = f"""
-                    set firewall policer {data.policer_name} if-exceeding bandwidth-limit {data.limit_bandwidth}
-                    set firewall policer {data.policer_name} if-exceeding burst-size-limit {data.limit_burst}
-                    set firewall policer {data.policer_name} then discard
-                """
-                cfg.load(policer_config, format="set")
-                cfg.commit()
+                if logical_system == "no":
+                    policer_config = f"""
+                        set firewall policer {data.policer_name} if-exceeding bandwidth-limit {data.limit_bandwidth}
+                        set firewall policer {data.policer_name} if-exceeding burst-size-limit {data.limit_burst}
+                        set firewall policer {data.policer_name} then discard
+                    """
+                    cfg.load(policer_config, format="set")
+                    cfg.commit()
 
-                ### VERIFIKASI CONFIG ###
-                filter_xml = etree.XML(f"""
-                <configuration>
-                  <firewall>
-                    <policer>
-                      <name>{data.policer_name}</name>
-                    </policer>
-                  </firewall>
-                </configuration>
-                """)
-                cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
-                # parsing policer info
-                policer = cfg_get.find('.//policer')
-                if policer is None:
-                    return JSONResponse(
-                        status_code=500,
-                        content={
-                            "status": "failed",
-                            "message": f"Policer {data.policer_name} not found after commit on {data.hostname}"
-                        }
-                    )
+                    ### VERIFIKASI CONFIG ###
+                    filter_xml = etree.XML(f"""
+                    <configuration>
+                      <firewall>
+                        <policer>
+                          <name>{data.policer_name}</name>
+                        </policer>
+                      </firewall>
+                    </configuration>
+                    """)
+                    cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                    # parsing policer info
+                    policer = cfg_get.find('.//policer')
+                    if policer is None:
+                        return JSONResponse(
+                            status_code=500,
+                            content={
+                                "status": "failed",
+                                "message": f"Policer {data.policer_name} not found after commit on {data.hostname}",
+                                "hostname": {data.hostname}
 
-                # ambil nilai limit bandwidth & burst
-                bw_elem = policer.find('if-exceeding/bandwidth-limit')
-                burst_elem = policer.find('if-exceeding/burst-size-limit')
-                bw_value = bw_elem.text if bw_elem is not None else "None"
-                burst_value = burst_elem.text if burst_elem is not None else "None"
+                            }
+                        )
 
-                return {
-                    "status": "success",
-                    "message": f"Policer {data.policer_name} configured and verified on {data.hostname}",
-                    "hostname": data.hostname,
-                    "policer_name": data.policer_name,
-                    "limit_bandwidth": bw_value,
-                    "limit_burst": burst_value,
-                    "id_group": data.id_group,
-                    "id_user": data.id_user
-                }
+                    # ambil nilai limit bandwidth & burst
+                    bw_elem = policer.find('if-exceeding/bandwidth-limit')
+                    burst_elem = policer.find('if-exceeding/burst-size-limit')
+                    bw_value = bw_elem.text if bw_elem is not None else "None"
+                    burst_value = burst_elem.text if burst_elem is not None else "None"
+
+                    return {
+                        "status": "success",
+                        "message": f"Policer {data.policer_name} configured and verified on {data.hostname}",
+                        "hostname": data.hostname,
+                        "policer_name": data.policer_name,
+                        "limit_bandwidth": bw_value,
+                        "limit_burst": burst_value,
+                        "id_group": data.id_group,
+                        "id_user": data.id_user
+                    }
+                else:
+                    policer_config = f"""
+                        set logical-systems {data.hostname} firewall policer {data.policer_name} if-exceeding bandwidth-limit {data.limit_bandwidth}
+                        set logical-systems {data.hostname} firewall policer {data.policer_name} if-exceeding burst-size-limit {data.limit_burst}
+                        set logical-systems {data.hostname} firewall policer {data.policer_name} then discard
+                    """
+                    cfg.load(policer_config, format="set")
+                    cfg.commit()
+
+                    ### VERIFIKASI CONFIG ###
+                    filter_xml = etree.XML(f"""
+                    <configuration>
+                      <logical-systems>
+                        <name>{data.hostname}</name>
+                        <firewall>
+                            <policer>
+                              <name>{data.policer_name}</name>
+                            </policer>
+                          </firewall>
+                      </logical-systems>
+                    </configuration>
+                    """)
+                    cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                    # parsing policer info
+                    policer = cfg_get.find('.//policer')
+                    if policer is None:
+                        return JSONResponse(
+                            status_code=500,
+                            content={
+                                "status": "failed",
+                                "message": f"Policer {data.policer_name} not found after commit on {data.hostname}",
+                                "hostname": {data.hostname}
+                            }
+                        )
+
+                    # ambil nilai limit bandwidth & burst
+                    bw_elem = policer.find('if-exceeding/bandwidth-limit')
+                    burst_elem = policer.find('if-exceeding/burst-size-limit')
+                    bw_value = bw_elem.text if bw_elem is not None else "None"
+                    burst_value = burst_elem.text if burst_elem is not None else "None"
+
+                    return {
+                        "status": "success",
+                        "message": f"Policer {data.policer_name} configured and verified on {data.hostname}",
+                        "hostname": data.hostname,
+                        "policer_name": data.policer_name,
+                        "limit_bandwidth": bw_value,
+                        "limit_burst": burst_value,
+                        "id_group": data.id_group,
+                        "id_user": data.id_user
+                    }
                 
     except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
             return JSONResponse(
                 status_code=504,
                 content={
                     "status":"failed",
-                    "message":f"Cannot reach device {data.hostname}: {str(e)}"    
+                    "message":f"Cannot reach device {data.hostname}: {str(e)}",
+                    "hostname": {data.hostname}
                 }
             )
 
@@ -270,7 +471,8 @@ def receive_bw(data: PolicerData):
                 status_code=504,
                 content={
                     "status":"failed",
-                    "message":f"Error anomaly device {data.hostname}: {str(e)}"    
+                    "message":f"Error anomaly device {data.hostname}: {str(e)}",
+                    "hostname": {data.hostname}  
                 }
             )
 
@@ -293,60 +495,125 @@ class BodData(BaseModel):
 def receive_bod(data: BodData):
     mysql_date = data.date.strftime("%Y-%m-%d %H:%M:%S")
     try:
+
+        with engine.begin() as conn:
+            router = conn.execute(
+                text("SELECT ip_address, logical_system FROM table_bwm_rtr WHERE hostname=:h LIMIT 1"),
+                {"h": data.hostname}
+            ).fetchone()
+
+        ip_device = router.ip_address
+        logical_system = router.logical_system
+
         # connect ke device
-        with Device(host=data.hostname, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
+        with Device(host=ip_device, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
             with Config(dev, mode="exclusive") as cfg:
                 # escape semua { } yang bagian config Juniper
-                bod_config = f"""
-                    set interfaces {data.interface} unit {data.unit} family inet policer input {data.bod_input_policer}
-                    set interfaces {data.interface} unit {data.unit} family inet policer output {data.bod_output_policer}
-                """
-                cfg.load(bod_config, format="set")
-                cfg.commit()
+                if logical_system == "no":
+                    bod_config = f"""
+                        set interfaces {data.interface} unit {data.unit} family inet policer input {data.bod_input_policer}
+                        set interfaces {data.interface} unit {data.unit} family inet policer output {data.bod_output_policer}
+                    """
+                    cfg.load(bod_config, format="set")
+                    cfg.commit()
 
 
-                ### VERIFIKASI CONFIG ###
-                filter_xml = etree.XML(f"""
-                    <configuration>
-                      <interfaces>
-                        <interface>
-                          <name>{data.interface}</name>
-                          <unit>
-                            <name>{data.unit}</name>
-                          </unit>
-                        </interface>
-                      </interfaces>
-                    </configuration>
-                """)
-                cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
-                input_policer = cfg_get.findtext('.//family/inet/policer/input')
-                output_policer = cfg_get.findtext('.//family/inet/policer/output')
-                if input_policer == data.bod_input_policer and output_policer == data.bod_output_policer:
-                    return {
-                        "status": "success",
-                        "message": f"Configuration applied on router {data.hostname} at interface {data.interface} unit {data.unit}",
-                        "hostname": data.hostname,
-                        "description": data.description,
-                        "interface": data.interface,
-                        "unit": data.unit,
-                        "old_input_policer": data.old_input_policer,
-                        "old_output_policer": data.old_output_policer,
-                        "date": mysql_date,
-                        "bod_input_policer": data.bod_input_policer,
-                        "bod_output_policer": data.bod_output_policer,
-                        "id_group": data.id_group,
-                        "id_user": data.id_user,
+                    ### VERIFIKASI CONFIG ###
+                    filter_xml = etree.XML(f"""
+                        <configuration>
+                          <interfaces>
+                            <interface>
+                              <name>{data.interface}</name>
+                              <unit>
+                                <name>{data.unit}</name>
+                              </unit>
+                            </interface>
+                          </interfaces>
+                        </configuration>
+                    """)
+                    cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                    input_policer = cfg_get.findtext('.//family/inet/policer/input')
+                    output_policer = cfg_get.findtext('.//family/inet/policer/output')
+                    if input_policer == data.bod_input_policer and output_policer == data.bod_output_policer:
+                        return {
+                            "status": "success",
+                            "message": f"Configuration applied on router {data.hostname} at interface {data.interface} unit {data.unit}",
+                            "hostname": data.hostname,
+                            "description": data.description,
+                            "interface": data.interface,
+                            "unit": data.unit,
+                            "old_input_policer": data.old_input_policer,
+                            "old_output_policer": data.old_output_policer,
+                            "date": mysql_date,
+                            "bod_input_policer": data.bod_input_policer,
+                            "bod_output_policer": data.bod_output_policer,
+                            "id_group": data.id_group,
+                            "id_user": data.id_user,
 
-                    }
+                        }
+                    else:
+                        return {
+                            "status": "failed",
+                            "description": data.description,
+                            "message": f"Configuration failed on router {data.hostname} at interface {data.interface} unit {data.unit}",
+                            "input_policer": input_policer,
+                            "output_policer": output_policer,
+                            "id_group": data.id_group,
+                        }
                 else:
-                    return {
-                        "status": "failed",
-                        "description": data.description,
-                        "message": f"Configuration failed on router {data.hostname} at interface {data.interface} unit {data.unit}",
-                        "input_policer": input_policer,
-                        "output_policer": output_policer,
-                        "id_group": data.id_group,
-                    }
+                    bod_config = f"""
+                        set logical-systems {data.hostname} interfaces {data.interface} unit {data.unit} family inet policer input {data.bod_input_policer}
+                        set logical-systems {data.hostname} interfaces {data.interface} unit {data.unit} family inet policer output {data.bod_output_policer}
+                    """
+                    cfg.load(bod_config, format="set")
+                    cfg.commit()
+
+
+                    ### VERIFIKASI CONFIG ###
+                    filter_xml = etree.XML(f"""
+                        <configuration>
+                            <logical-systems>
+                                <name>{data.hostname}</name>
+                                <interfaces>
+                                    <interface>
+                                      <name>{data.interface}</name>
+                                        <unit>
+                                            <name>{data.unit}</name>
+                                        </unit>
+                                    </interface>
+                              </interfaces>
+                            </logical-systems>
+                        </configuration>
+                    """)
+                    cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                    input_policer = cfg_get.findtext('.//family/inet/policer/input')
+                    output_policer = cfg_get.findtext('.//family/inet/policer/output')
+                    if input_policer == data.bod_input_policer and output_policer == data.bod_output_policer:
+                        return {
+                            "status": "success",
+                            "message": f"Configuration applied on router {data.hostname} at interface {data.interface} unit {data.unit}",
+                            "hostname": data.hostname,
+                            "description": data.description,
+                            "interface": data.interface,
+                            "unit": data.unit,
+                            "old_input_policer": data.old_input_policer,
+                            "old_output_policer": data.old_output_policer,
+                            "date": mysql_date,
+                            "bod_input_policer": data.bod_input_policer,
+                            "bod_output_policer": data.bod_output_policer,
+                            "id_group": data.id_group,
+                            "id_user": data.id_user,
+
+                        }
+                    else:
+                        return {
+                            "status": "failed",
+                            "description": data.description,
+                            "message": f"Configuration failed on router {data.hostname} at interface {data.interface} unit {data.unit}",
+                            "input_policer": input_policer,
+                            "output_policer": output_policer,
+                            "id_group": data.id_group,
+                        }
                 
     except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
             return JSONResponse(
@@ -380,51 +647,105 @@ def rollback_bod():
             WHERE status='Active' AND bod_until <= :now
         """), {"now": now}).fetchall()
 
+
+
         results = []
 
         for row in expired_rows:
             try:
-                with Device(host=row.hostname, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
+                router = conn.execute(
+                    text("SELECT ip_address, logical_system FROM table_bwm_rtr WHERE hostname=:h LIMIT 1"),
+                    {"h": row.hostname}
+                ).fetchone()
+
+                ip_device = router.ip_address
+                logical_system = router.logical_system
+                with Device(host=ip_device, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
                     with Config(dev, mode="exclusive") as cfg:
-                        rollback_config = f"""
-                        set interfaces {row.interface} unit {row.unit_interface} family inet policer input {row.old_input_policer}
-                        set interfaces {row.interface} unit {row.unit_interface} family inet policer output {row.old_output_policer}
-                        """
-                        cfg.load(rollback_config, format="set")
-                        cfg.commit()
+                        if logical_system == "no":
+                            rollback_config = f"""
+                            set interfaces {row.interface} unit {row.unit_interface} family inet policer input {row.old_input_policer}
+                            set interfaces {row.interface} unit {row.unit_interface} family inet policer output {row.old_output_policer}
+                            """
+                            cfg.load(rollback_config, format="set")
+                            cfg.commit()
 
-                        filter_xml = etree.XML(f"""
-                            <configuration>
-                              <interfaces>
-                                <interface>
-                                  <name>{row.interface}</name>
-                                  <unit>
-                                    <name>{row.unit_interface}</name>
-                                  </unit>
-                                </interface>
-                              </interfaces>
-                            </configuration>
-                        """)
-                        cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
-                        input_policer = cfg_get.findtext('.//family/inet/policer/input')
-                        output_policer = cfg_get.findtext('.//family/inet/policer/output')
-                        if input_policer == row.old_input_policer and output_policer == row.old_output_policer:
-                            # update status jadi Inactive
-                            conn.execute(text("""
-                                UPDATE table_bwm_bod SET status='Inactive'
-                                WHERE id=:id
-                            """), {"id": row.id})
+                            filter_xml = etree.XML(f"""
+                                <configuration>
+                                  <interfaces>
+                                    <interface>
+                                      <name>{row.interface}</name>
+                                      <unit>
+                                        <name>{row.unit_interface}</name>
+                                      </unit>
+                                    </interface>
+                                  </interfaces>
+                                </configuration>
+                            """)
+                            cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                            input_policer = cfg_get.findtext('.//family/inet/policer/input')
+                            output_policer = cfg_get.findtext('.//family/inet/policer/output')
+                            if input_policer == row.old_input_policer and output_policer == row.old_output_policer:
+                                # update status jadi Inactive
+                                conn.execute(text("""
+                                    UPDATE table_bwm_bod SET status='Inactive'
+                                    WHERE id=:id
+                                """), {"id": row.id})
 
-                            results.append({
-                                "hostname": row.hostname,
-                                "interface": row.interface,
-                                "unit": row.unit_interface,
-                                "status": "rollback success"
-                            })
+                                results.append({
+                                    "hostname": row.hostname,
+                                    "interface": row.interface,
+                                    "unit": row.unit_interface,
+                                    "status": "rollback success"
+                                })
+                            else:
+                                results.append({
+                                    "status": "failed",
+                                })
                         else:
-                            results.append({
-                                "status": "failed",
-                            })
+                            rollback_config = f"""
+                            set logical-systems {row.hostname} interfaces {row.interface} unit {row.unit_interface} family inet policer input {row.old_input_policer}
+                            set logical-systems {row.hostname} interfaces {row.interface} unit {row.unit_interface} family inet policer output {row.old_output_policer}
+                            """
+                            cfg.load(rollback_config, format="set")
+                            cfg.commit()
+
+                            filter_xml = etree.XML(f"""
+                            <configuration>
+                                <logical-systems>
+                                    <name>{row.hostname}</name>
+                                    <interfaces>
+                                        <interface>
+                                          <name>{row.interface}</name>
+                                            <unit>
+                                                <name>{row.unit_interface}</name>
+                                            </unit>
+                                        </interface>
+                                  </interfaces>
+                                </logical-systems>
+                            </configuration>
+                            """)
+                            cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                            input_policer = cfg_get.findtext('.//family/inet/policer/input')
+                            output_policer = cfg_get.findtext('.//family/inet/policer/output')
+                            if input_policer == row.old_input_policer and output_policer == row.old_output_policer:
+                                # update status jadi Inactive
+                                conn.execute(text("""
+                                    UPDATE table_bwm_bod SET status='Inactive'
+                                    WHERE id=:id
+                                """), {"id": row.id})
+
+                                results.append({
+                                    "hostname": row.hostname,
+                                    "interface": row.interface,
+                                    "unit": row.unit_interface,
+                                    "status": "rollback success"
+                                })
+                            else:
+                                results.append({
+                                    "status": "failed",
+                                })
+
             except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
                 results.append({
                     "hostname": row.hostname,
