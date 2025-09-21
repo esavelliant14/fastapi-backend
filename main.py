@@ -331,9 +331,11 @@ def receive_bod(data: BodData):
                 else:
                     return {
                         "status": "failed",
+                        "description": data.description,
                         "message": f"Configuration failed on router {data.hostname} at interface {data.interface} unit {data.unit}",
                         "input_policer": input_policer,
                         "output_policer": output_policer,
+                        "id_group": data.id_group,
                     }
                 
     except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
@@ -341,7 +343,9 @@ def receive_bod(data: BodData):
                 status_code=504,
                 content={
                     "status":"failed",
-                    "message":f"Cannot reach device {data.hostname}: {str(e)}"    
+                    "description": data.description,
+                    "message":f"Cannot reach device {data.hostname}: {str(e)}",
+                    "id_group": data.id_group, 
                 }
             )
 
@@ -350,6 +354,8 @@ def receive_bod(data: BodData):
                 status_code=504,
                 content={
                     "status":"failed",
+                    "description": data.description,
+                    "id_group": data.id_group,
                     "message":f"Error anomaly device {data.hostname}: {str(e)}"    
                 }
             )
@@ -377,18 +383,38 @@ def rollback_bod():
                         cfg.load(rollback_config, format="set")
                         cfg.commit()
 
-                # update status jadi Inactive
-                conn.execute(text("""
-                    UPDATE table_bwm_bod SET status='Inactive'
-                    WHERE id=:id
-                """), {"id": row.id})
+                        filter_xml = etree.XML(f"""
+                            <configuration>
+                              <interfaces>
+                                <interface>
+                                  <name>{row.interface}</name>
+                                  <unit>
+                                    <name>{row.unit_interface}</name>
+                                  </unit>
+                                </interface>
+                              </interfaces>
+                            </configuration>
+                        """)
+                        cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                        input_policer = cfg_get.findtext('.//family/inet/policer/input')
+                        output_policer = cfg_get.findtext('.//family/inet/policer/output')
+                        if input_policer == row.old_input_policer and output_policer == row.old_output_policer:
+                            # update status jadi Inactive
+                            conn.execute(text("""
+                                UPDATE table_bwm_bod SET status='Inactive'
+                                WHERE id=:id
+                            """), {"id": row.id})
 
-                results.append({
-                    "hostname": row.hostname,
-                    "interface": row.interface,
-                    "unit": row.unit_interface,
-                    "status": "rollback success"
-                })
+                            results.append({
+                                "hostname": row.hostname,
+                                "interface": row.interface,
+                                "unit": row.unit_interface,
+                                "status": "rollback success"
+                            })
+                        else:
+                            results.append({
+                                "status": "failed",
+                            })
             except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
                 results.append({
                     "hostname": row.hostname,
