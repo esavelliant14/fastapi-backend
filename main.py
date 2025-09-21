@@ -7,7 +7,7 @@ from jnpr.junos import Device
 from jnpr.junos.utils.config import Config
 from lxml import etree
 from datetime import datetime
-import os
+import os, threading
 from dotenv import load_dotenv
 from jnpr.junos.exception import ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError
 
@@ -27,6 +27,16 @@ DB_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}"
 engine = create_engine(DB_URL)
 
 app = FastAPI()
+
+# === Tambahan mekanisme LOCK ===
+device_locks = {}
+
+def get_device_lock(hostname: str):
+    """Dapatkan lock untuk hostname tertentu."""
+    if hostname not in device_locks:
+        device_locks[hostname] = threading.Lock()
+    return device_locks[hostname]
+# ===============================
 
 # model request yang masuk dari Laravel
 class ClientData(BaseModel):
