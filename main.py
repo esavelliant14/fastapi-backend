@@ -715,6 +715,21 @@ def rollback_bod():
                                         "unit": row.unit_interface,
                                         "status": "rollback success"
                                     })
+                                    conn.execute(
+                                        text("""
+                                                INSERT INTO table_loggings (action_by, category_action, status, ip_address, agent, details, id_group, created_at)
+                                                VALUES (:action_by, :category_action, :status, :ip_address, :agent, :details, :id_group, NOW())
+                                        """),
+                                        {
+                                            "action_by": "Automation System",
+                                            "category_action": "Rollback BOD",
+                                            "status": "Success",
+                                            "ip_address": "localhost",
+                                            "agent": "backend",
+                                            "details": f"Rollback for client {row.description} interface={row.interface} unit={row.unit_interface} success, status change with Inactive",
+                                            "id_group": {row.id_group}
+                                        }
+                                    )
                                 else:
                                     results.append({
                                         "status": "failed",
@@ -803,6 +818,21 @@ def rollback_bod():
                                         "unit": row.unit_interface,
                                         "status": "rollback success"
                                     })
+                                    conn.execute(
+                                        text("""
+                                                INSERT INTO table_loggings (action_by, category_action, status, ip_address, agent, details, id_group, created_at)
+                                                VALUES (:action_by, :category_action, :status, :ip_address, :agent, :details, :id_group, NOW())
+                                        """),
+                                        {
+                                            "action_by": "Automation System",
+                                            "category_action": "Rollback BOD",
+                                            "status": "Success",
+                                            "ip_address": "localhost",
+                                            "agent": "backend",
+                                            "details": f"Rollback for client {row.description} interface={row.interface} unit={row.unit_interface} success, status change with Inactive",
+                                            "id_group": {row.id_group}
+                                        }
+                                    )
                                 else:
                                     results.append({
                                         "status": "failed",
