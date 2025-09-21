@@ -314,7 +314,7 @@ def receive_client(data: ClientData):
                 content={
                     "status":"failed",
                     "message":f"Cannot reach device {data.hostname}: {str(e)}",
-                    "hostname": {data.hostname}
+                    "hostname": data.hostname
                 }
             )
 
@@ -324,7 +324,7 @@ def receive_client(data: ClientData):
                 content={
                     "status":"failed",
                     "message":f"Error anomaly device {data.hostname}: {str(e)}",
-                    "hostname": {data.hostname}   
+                    "hostname": data.hostname  
                 }
             )
 
@@ -356,16 +356,9 @@ def receive_bw(data: PolicerData):
         with Device(host=ip_device, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
             with Config(dev, mode="exclusive") as cfg:
                 if logical_system == "no":
-                    policer_config = f"""
-                        set firewall policer {data.policer_name} if-exceeding bandwidth-limit {data.limit_bandwidth}
-                        set firewall policer {data.policer_name} if-exceeding burst-size-limit {data.limit_burst}
-                        set firewall policer {data.policer_name} then discard
-                    """
-                    cfg.load(policer_config, format="set")
-                    cfg.commit()
 
                     ### VERIFIKASI CONFIG ###
-                    filter_xml = etree.XML(f"""
+                    filter_xml_check = etree.XML(f"""
                     <configuration>
                       <firewall>
                         <policer>
@@ -374,47 +367,71 @@ def receive_bw(data: PolicerData):
                       </firewall>
                     </configuration>
                     """)
-                    cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
-                    # parsing policer info
-                    policer = cfg_get.find('.//policer')
-                    if policer is None:
+                    cfg_get = dev.rpc.get_config(filter_xml=filter_xml_check)
+                    policer_check = cfg_get.find('.//policer')
+                    if policer_check is None:
+                        policer_config = f"""
+                            set firewall policer {data.policer_name} if-exceeding bandwidth-limit {data.limit_bandwidth}
+                            set firewall policer {data.policer_name} if-exceeding burst-size-limit {data.limit_burst}
+                            set firewall policer {data.policer_name} then discard
+                        """
+                        cfg.load(policer_config, format="set")
+                        cfg.commit()
+
+                        ### VERIFIKASI CONFIG ###
+                        filter_xml = etree.XML(f"""
+                        <configuration>
+                          <firewall>
+                            <policer>
+                              <name>{data.policer_name}</name>
+                            </policer>
+                          </firewall>
+                        </configuration>
+                        """)
+                        cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                        # parsing policer info
+                        policer = cfg_get.find('.//policer')
+                        if policer is None:
+                            return JSONResponse(
+                                status_code=500,
+                                content={
+                                    "status": "failed",
+                                    "message": f"Policer {data.policer_name} not found after commit on {data.hostname}",
+                                    "hostname": data.hostname
+
+                                }
+                            )
+
+                        # ambil nilai limit bandwidth & burst
+                        bw_elem = policer.find('if-exceeding/bandwidth-limit')
+                        burst_elem = policer.find('if-exceeding/burst-size-limit')
+                        bw_value = bw_elem.text if bw_elem is not None else "None"
+                        burst_value = burst_elem.text if burst_elem is not None else "None"
+
+                        return {
+                            "status": "success",
+                            "message": f"Policer {data.policer_name} configured and verified on {data.hostname}",
+                            "hostname": data.hostname,
+                            "policer_name": data.policer_name,
+                            "limit_bandwidth": bw_value,
+                            "limit_burst": burst_value,
+                            "id_group": data.id_group,
+                            "id_user": data.id_user
+                        }
+                    else:
                         return JSONResponse(
                             status_code=500,
                             content={
                                 "status": "failed",
-                                "message": f"Policer {data.policer_name} not found after commit on {data.hostname}",
-                                "hostname": {data.hostname}
+                                "message": f"policer {data.policer_name} already exist on device {data.hostname}",
+                                "hostname": data.hostname
 
                             }
                         )
 
-                    # ambil nilai limit bandwidth & burst
-                    bw_elem = policer.find('if-exceeding/bandwidth-limit')
-                    burst_elem = policer.find('if-exceeding/burst-size-limit')
-                    bw_value = bw_elem.text if bw_elem is not None else "None"
-                    burst_value = burst_elem.text if burst_elem is not None else "None"
-
-                    return {
-                        "status": "success",
-                        "message": f"Policer {data.policer_name} configured and verified on {data.hostname}",
-                        "hostname": data.hostname,
-                        "policer_name": data.policer_name,
-                        "limit_bandwidth": bw_value,
-                        "limit_burst": burst_value,
-                        "id_group": data.id_group,
-                        "id_user": data.id_user
-                    }
                 else:
-                    policer_config = f"""
-                        set logical-systems {data.hostname} firewall policer {data.policer_name} if-exceeding bandwidth-limit {data.limit_bandwidth}
-                        set logical-systems {data.hostname} firewall policer {data.policer_name} if-exceeding burst-size-limit {data.limit_burst}
-                        set logical-systems {data.hostname} firewall policer {data.policer_name} then discard
-                    """
-                    cfg.load(policer_config, format="set")
-                    cfg.commit()
-
                     ### VERIFIKASI CONFIG ###
-                    filter_xml = etree.XML(f"""
+                    filter_xml_check = etree.XML(f"""
                     <configuration>
                       <logical-systems>
                         <name>{data.hostname}</name>
@@ -426,35 +443,69 @@ def receive_bw(data: PolicerData):
                       </logical-systems>
                     </configuration>
                     """)
-                    cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
-                    # parsing policer info
-                    policer = cfg_get.find('.//policer')
-                    if policer is None:
+                    cfg_get = dev.rpc.get_config(filter_xml=filter_xml_check)
+                    policer_check = cfg_get.find('.//policer')
+                    if policer_check is None:
+                        policer_config = f"""
+                            set logical-systems {data.hostname} firewall policer {data.policer_name} if-exceeding bandwidth-limit {data.limit_bandwidth}
+                            set logical-systems {data.hostname} firewall policer {data.policer_name} if-exceeding burst-size-limit {data.limit_burst}
+                            set logical-systems {data.hostname} firewall policer {data.policer_name} then discard
+                        """
+                        cfg.load(policer_config, format="set")
+                        cfg.commit()
+
+                        ### VERIFIKASI CONFIG ###
+                        filter_xml = etree.XML(f"""
+                        <configuration>
+                          <logical-systems>
+                            <name>{data.hostname}</name>
+                            <firewall>
+                                <policer>
+                                  <name>{data.policer_name}</name>
+                                </policer>
+                              </firewall>
+                          </logical-systems>
+                        </configuration>
+                        """)
+                        cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                        # parsing policer info
+                        policer = cfg_get.find('.//policer')
+                        if policer is None:
+                            return JSONResponse(
+                                status_code=504,
+                                content={
+                                    "status": "failed",
+                                    "message": f"Policer {data.policer_name} not found after commit on {data.hostname}",
+                                    "hostname": data.hostname
+                                }
+                            )
+
+                        # ambil nilai limit bandwidth & burst
+                        bw_elem = policer.find('if-exceeding/bandwidth-limit')
+                        burst_elem = policer.find('if-exceeding/burst-size-limit')
+                        bw_value = bw_elem.text if bw_elem is not None else "None"
+                        burst_value = burst_elem.text if burst_elem is not None else "None"
+
+                        return {
+                            "status": "success",
+                            "message": f"Policer {data.policer_name} configured and verified on {data.hostname}",
+                            "hostname": data.hostname,
+                            "policer_name": data.policer_name,
+                            "limit_bandwidth": bw_value,
+                            "limit_burst": burst_value,
+                            "id_group": data.id_group,
+                            "id_user": data.id_user
+                        }
+                    else:
                         return JSONResponse(
-                            status_code=500,
+                            status_code=404,
                             content={
                                 "status": "failed",
-                                "message": f"Policer {data.policer_name} not found after commit on {data.hostname}",
-                                "hostname": {data.hostname}
+                                "message": f"policer {data.policer_name} already exist on device {data.hostname}",
+                                "hostname": data.hostname
+
                             }
                         )
-
-                    # ambil nilai limit bandwidth & burst
-                    bw_elem = policer.find('if-exceeding/bandwidth-limit')
-                    burst_elem = policer.find('if-exceeding/burst-size-limit')
-                    bw_value = bw_elem.text if bw_elem is not None else "None"
-                    burst_value = burst_elem.text if burst_elem is not None else "None"
-
-                    return {
-                        "status": "success",
-                        "message": f"Policer {data.policer_name} configured and verified on {data.hostname}",
-                        "hostname": data.hostname,
-                        "policer_name": data.policer_name,
-                        "limit_bandwidth": bw_value,
-                        "limit_burst": burst_value,
-                        "id_group": data.id_group,
-                        "id_user": data.id_user
-                    }
                 
     except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
             return JSONResponse(
@@ -462,7 +513,7 @@ def receive_bw(data: PolicerData):
                 content={
                     "status":"failed",
                     "message":f"Cannot reach device {data.hostname}: {str(e)}",
-                    "hostname": {data.hostname}
+                    "hostname": data.hostname
                 }
             )
 
@@ -472,7 +523,7 @@ def receive_bw(data: PolicerData):
                 content={
                     "status":"failed",
                     "message":f"Error anomaly device {data.hostname}: {str(e)}",
-                    "hostname": {data.hostname}  
+                    "hostname": data.hostname
                 }
             )
 
@@ -970,7 +1021,7 @@ def refresh_client(data: RefreshClientData):
                 content={
                     "status":"failed",
                     "message":f"Cannot reach device {data.hostname}: {str(e)}",
-                    "hostname": {data.hostname}
+                    "hostname": data.hostname
                 }
             )
 
@@ -980,6 +1031,6 @@ def refresh_client(data: RefreshClientData):
                 content={
                     "status":"failed",
                     "message":f"Error anomaly device {data.hostname}: {str(e)}",
-                    "hostname": {data.hostname}  
+                    "hostname": data.hostname
                 }
             )
