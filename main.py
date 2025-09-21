@@ -878,3 +878,108 @@ def rollback_bod():
 
         return {"results": results}
 
+
+class RefreshClientData(BaseModel):
+    hostname: str
+    interface: str
+    description: str
+    unit: int
+    input_policer: str
+    output_policer: str
+
+
+
+@app.post("/refresh-client")
+def refresh_client(data: RefreshClientData):
+    try:
+        with engine.begin() as conn:
+            router = conn.execute(
+                text("SELECT ip_address, logical_system FROM table_bwm_rtr WHERE hostname=:h LIMIT 1"),
+                {"h": data.hostname}
+            ).fetchone()
+
+        ip_device = router.ip_address
+        logical_system = router.logical_system
+
+        # connect ke device
+        with Device(host=ip_device, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
+            with Config(dev, mode="exclusive") as cfg:
+                if logical_system == "no":
+
+                    filter_xml = etree.XML(f"""
+                         <configuration>
+                           <interfaces>
+                             <interface>
+                               <name>{data.interface}</name>
+                               <unit>
+                                 <name>{data.unit}</name>
+                               </unit>
+                             </interface>
+                           </interfaces>
+                         </configuration>
+                    """)
+                    cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                    input_policer = cfg_get.findtext('.//family/inet/policer/input')
+                    output_policer = cfg_get.findtext('.//family/inet/policer/output')
+
+                    if data.input_policer == input_policer and data.output_policer == output_policer:
+                        return {
+                            "status": "success",
+                            "message": f"Configuration on device matches database records for client {data.description}",
+                        }
+                    else:
+                        return {
+                            "status": "failed",
+                            "message": f"Configuration on device does not match database records for client {data.description}",
+                        }
+                else:
+                    filter_xml = etree.XML(f"""
+                    <configuration>
+                        <logical-systems>
+                            <name>{data.hostname}</name>
+                            <interfaces>
+                                <interface>
+                                  <name>{data.interface}</name>
+                                    <unit>
+                                        <name>{data.unit}</name>
+                                    </unit>
+                                </interface>
+                          </interfaces>
+                        </logical-systems>
+                    </configuration>
+                    """)
+                    cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                    input_policer = cfg_get.findtext('.//family/inet/policer/input')
+                    output_policer = cfg_get.findtext('.//family/inet/policer/output')
+
+                    if data.input_policer == input_policer and data.output_policer == output_policer:
+                        return {
+                            "status": "success",
+                            "message": f"Configuration on device matches database records for client {data.description}",
+                        }
+                    else:
+                        return {
+                            "status": "failed",
+                            "message": f"Configuration on device does not match database records for client {data.description}",
+                        }
+
+                
+    except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "status":"failed",
+                    "message":f"Cannot reach device {data.hostname}: {str(e)}",
+                    "hostname": {data.hostname}
+                }
+            )
+
+    except Exception as e:
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "status":"failed",
+                    "message":f"Error anomaly device {data.hostname}: {str(e)}",
+                    "hostname": {data.hostname}  
+                }
+            )
