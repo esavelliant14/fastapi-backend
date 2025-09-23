@@ -777,7 +777,7 @@ def rollback_bod():
                                             "status": "Success",
                                             "ip_address": "localhost",
                                             "agent": "backend",
-                                            "details": f"Rollback for client {row.description} interface={row.interface} unit={row.unit_interface} success, status change with Inactive",
+                                            "details": f"Rollback for client {row.description} interface={row.interface} unit={row.unit_interface} success from BOD bandwidth(up/down)={row.bod_input_policer}/{bod.output_policer} to old bandwidth={row.old_input_policer}/{row.old_output_policer}, status change with Inactive",
                                             "id_group": {row.id_group}
                                         }
                                     )
