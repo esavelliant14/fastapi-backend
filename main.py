@@ -1034,3 +1034,543 @@ def refresh_client(data: RefreshClientData):
                     "hostname": data.hostname
                 }
             )
+
+
+class getDataClient(BaseModel):
+    hostname: str
+    ip_address: str
+    interface: str
+    logical_system: str
+    id_group: int
+    id_user: int
+
+
+@app.post("/get-client")
+def get_client(data: getDataClient):
+    now = datetime.now()
+    with engine.begin() as conn:
+        try:
+           with Device(host=data.ip_address, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
+               with Config(dev, mode="exclusive") as cfg:
+                    if data.logical_system == "no":
+                        filter_xml = etree.XML(f'''
+                        <configuration>
+                          <interfaces>
+                            <interface>
+                              <name>{data.interface}</name>
+                            </interface>
+                          </interfaces>
+                        </configuration>
+                        ''')
+
+                        cfg = dev.rpc.get_config(filter_xml=filter_xml)
+
+                        # Parsing data
+                        interface_name = cfg.findtext('.//interface/name')
+                        data_to_insert = []
+
+
+                        for unit in cfg.xpath('.//unit'):
+                            unit_name = unit.findtext('name')
+                            attr_unit = unit.get('inactive')
+                            if attr_unit:
+                                status_unit_1 = "Inactive"
+                            else:
+                                status_unit_1 = "Active"
+
+                            #check disable atau tidak
+                            if unit.find('disable') is not None:
+                                status_unit_2 = "Disable"
+                            else:
+                                status_unit_2 = "Enable"
+
+                            status_unit = f"{status_unit_1} | {status_unit_2}"
+                            #ip_list = [addr.text for addr in unit.xpath('family/inet/address/name')]
+                            #ip = ", ".join(ip_list) if ip_list else "None"
+                            ip_list = []
+                            for addr_el in unit.xpath('family/inet/address'):
+                                ip_addr = addr_el.findtext('name')
+                                inactive_attr = addr_el.get('inactive')
+                                if inactive_attr:  # ada attribute inactive
+                                    ip_list.append(f"{ip_addr}(inactive)")
+                                else:
+                                    ip_list.append(ip_addr)
+                            ip = ", ".join(ip_list) if ip_list else "None"
+                            #description
+                            description = unit.findtext('description')
+                            #status policer
+                            find_status_policer = unit.find('.//family/inet/policer')
+                            if find_status_policer is None:
+                                status_policer = "None"
+                            else:
+                                attr_policer = find_status_policer.get('inactive')
+                                if attr_policer:
+                                    status_policer = "Inactive"
+                                else:
+                                    status_policer = "Active"
+
+                            #status policer input
+                            find_status_input_policer = unit.find('.//family/inet/policer/input')
+                            if find_status_input_policer is None:
+                                status_input_policer = "None"
+                            else:
+                                attr_input_policer = find_status_input_policer.get('inactive')
+                                if attr_input_policer:
+                                    status_input_policer = "Inactive"
+                                else:
+                                    status_input_policer = "Active"
+                            #status policer output
+                            find_status_output_policer = unit.find('.//family/inet/policer/output')
+                            if find_status_output_policer is None:
+                                status_output_policer = "None"
+                            else:
+                                attr_output_policer = find_status_output_policer.get('inactive')
+                                if attr_output_policer:
+                                    status_output_policer = "Inactive"
+                                else:
+                                    status_output_policer = "Active"
+                            #value policer input & output
+                            raw_input_policer = unit.findtext('family/inet/policer/input')
+                            input_policer = raw_input_policer
+                            raw_output_policer = unit.findtext('family/inet/policer/output')
+                            output_policer = raw_output_policer
+                            vlan_id = unit.findtext('vlan-id')
+                            id_group = data.id_group
+                            id_user = data.id_user
+                            
+
+                            if all([ip, description, input_policer, output_policer]):
+
+                                data_to_insert.append({
+                                    "hostname": data.hostname,
+                                    "interface": interface_name,
+                                    "unit_interface": unit_name,
+                                    "status_unit": status_unit,
+                                    "description": description,
+                                    "ip_address": ip,
+                                    "vlan_id": vlan_id,
+                                    "policer_status": status_policer,
+                                    "input_policer": input_policer,
+                                    "input_policer_status": status_input_policer,
+                                    "output_policer": output_policer,
+                                    "output_policer_status": status_output_policer,
+                                    "id_group": id_group,
+                                    "id_user": id_user,
+                                })
+                        #insert to DB
+
+                        for row in data_to_insert:
+
+                            check_query = text("""
+                                SELECT 1 FROM table_bwm_client
+                                WHERE interface = :interface AND unit_interface = :unit_interface AND hostname = :hostname
+                                LIMIT 1
+                            """)
+                            result = conn.execute(check_query, {
+                                "interface": row["interface"],
+                                "unit_interface": row["unit_interface"],
+                                "hostname": row["hostname"],
+                            }).fetchone()
+
+                            if result:
+                                continue
+
+                            conn.execute(
+                                text("""
+                                        INSERT INTO table_bwm_client (hostname,interface,unit_interface,status_unit,description,ip_address,
+                                            vlan_id, policer_status, input_policer, input_policer_status, output_policer, output_policer_status, 
+                                            id_group, id_user, created_at)
+                                        VALUES (:hostname, :interface, :unit_interface, :status_unit, :description, :ip_address, :vlan_id,
+                                        :policer_status, :input_policer, :input_policer_status, :output_policer, :output_policer_status,
+                                        :id_group, :id_user, NOW())
+                                """),
+                                {
+                                        "hostname": row['hostname'],
+                                        "interface": row['interface'],
+                                        "unit_interface": row['unit_interface'],
+                                        "status_unit": row['status_unit'],
+                                        "description": row['description'],
+                                        "ip_address": row['ip_address'],
+                                        "vlan_id": row['vlan_id'],
+                                        "policer_status": row['policer_status'],
+                                        "input_policer": row['input_policer'],
+                                        "input_policer_status": row['input_policer_status'],
+                                        "output_policer": row['output_policer'],
+                                        "output_policer_status": row['output_policer_status'],
+                                        "id_group": row['id_group'],
+                                        "id_user": row['id_user'],
+                                }
+                            )
+                        return {
+                            "status": "success",
+                            "message": f"Configuration update success",
+                        }
+                    else:
+                        filter_xml = etree.XML(f'''
+                        <configuration>
+                        <logical-systems>
+                        <name>{data.hostname}</name>
+                          <interfaces>
+                            <interface>
+                              <name>{data.interface}</name>
+                            </interface>
+                          </interfaces>
+                        </logical-systems>
+                        </configuration>
+                        ''')
+
+                        cfg = dev.rpc.get_config(filter_xml=filter_xml)
+
+                        # Parsing data
+                        interface_name = cfg.findtext('.//interface/name')
+                        data_to_insert = []
+
+
+                        for unit in cfg.xpath('.//unit'):
+                            unit_name = unit.findtext('name')
+                            attr_unit = unit.get('inactive')
+                            if attr_unit:
+                                status_unit_1 = "Inactive"
+                            else:
+                                status_unit_1 = "Active"
+
+                            #check disable atau tidak
+                            if unit.find('disable') is not None:
+                                status_unit_2 = "Disable"
+                            else:
+                                status_unit_2 = "Enable"
+
+                            status_unit = f"{status_unit_1} | {status_unit_2}"
+                            #ip_list = [addr.text for addr in unit.xpath('family/inet/address/name')]
+                            #ip = ", ".join(ip_list) if ip_list else "None"
+                            ip_list = []
+                            for addr_el in unit.xpath('family/inet/address'):
+                                ip_addr = addr_el.findtext('name')
+                                inactive_attr = addr_el.get('inactive')
+                                if inactive_attr:  # ada attribute inactive
+                                    ip_list.append(f"{ip_addr}(inactive)")
+                                else:
+                                    ip_list.append(ip_addr)
+                            ip = ", ".join(ip_list) if ip_list else "None"
+                            #description
+                            description = unit.findtext('description')
+                            #status policer
+                            find_status_policer = unit.find('.//family/inet/policer')
+                            if find_status_policer is None:
+                                status_policer = "None"
+                            else:
+                                attr_policer = find_status_policer.get('inactive')
+                                if attr_policer:
+                                    status_policer = "Inactive"
+                                else:
+                                    status_policer = "Active"
+
+                            #status policer input
+                            find_status_input_policer = unit.find('.//family/inet/policer/input')
+                            if find_status_input_policer is None:
+                                status_input_policer = "None"
+                            else:
+                                attr_input_policer = find_status_input_policer.get('inactive')
+                                if attr_input_policer:
+                                    status_input_policer = "Inactive"
+                                else:
+                                    status_input_policer = "Active"
+                            #status policer output
+                            find_status_output_policer = unit.find('.//family/inet/policer/output')
+                            if find_status_output_policer is None:
+                                status_output_policer = "None"
+                            else:
+                                attr_output_policer = find_status_output_policer.get('inactive')
+                                if attr_output_policer:
+                                    status_output_policer = "Inactive"
+                                else:
+                                    status_output_policer = "Active"
+                            #value policer input & output
+                            raw_input_policer = unit.findtext('family/inet/policer/input')
+                            input_policer = raw_input_policer
+                            raw_output_policer = unit.findtext('family/inet/policer/output')
+                            output_policer = raw_output_policer
+                            vlan_id = unit.findtext('vlan-id')
+                            id_group = data.id_group
+                            id_user = data.id_user
+                            
+
+                            if all([ip, description, input_policer, output_policer]):
+
+                                data_to_insert.append({
+                                    "hostname": data.hostname,
+                                    "interface": interface_name,
+                                    "unit_interface": unit_name,
+                                    "status_unit": status_unit,
+                                    "description": description,
+                                    "ip_address": ip,
+                                    "vlan_id": vlan_id,
+                                    "policer_status": status_policer,
+                                    "input_policer": input_policer,
+                                    "input_policer_status": status_input_policer,
+                                    "output_policer": output_policer,
+                                    "output_policer_status": status_output_policer,
+                                    "id_group": id_group,
+                                    "id_user": id_user,
+                                })
+                        #insert to DB
+
+                        for row in data_to_insert:
+
+                            check_query = text("""
+                                SELECT 1 FROM table_bwm_client
+                                WHERE interface = :interface AND unit_interface = :unit_interface AND hostname = :hostname
+                                LIMIT 1
+                            """)
+                            result = conn.execute(check_query, {
+                                "interface": row["interface"],
+                                "unit_interface": row["unit_interface"],
+                                "hostname": row["hostname"],
+                            }).fetchone()
+
+                            if result:
+                                continue
+
+                            conn.execute(
+                                text("""
+                                        INSERT INTO table_bwm_client (hostname,interface,unit_interface,status_unit,description,ip_address,
+                                            vlan_id, policer_status, input_policer, input_policer_status, output_policer, output_policer_status, 
+                                            id_group, id_user, created_at)
+                                        VALUES (:hostname, :interface, :unit_interface, :status_unit, :description, :ip_address, :vlan_id,
+                                        :policer_status, :input_policer, :input_policer_status, :output_policer, :output_policer_status,
+                                        :id_group, :id_user, NOW())
+                                """),
+                                {
+                                        "hostname": row['hostname'],
+                                        "interface": row['interface'],
+                                        "unit_interface": row['unit_interface'],
+                                        "status_unit": row['status_unit'],
+                                        "description": row['description'],
+                                        "ip_address": row['ip_address'],
+                                        "vlan_id": row['vlan_id'],
+                                        "policer_status": row['policer_status'],
+                                        "input_policer": row['input_policer'],
+                                        "input_policer_status": row['input_policer_status'],
+                                        "output_policer": row['output_policer'],
+                                        "output_policer_status": row['output_policer_status'],
+                                        "id_group": row['id_group'],
+                                        "id_user": row['id_user'],
+                                }
+                            )
+                        return {
+                            "status": "success",
+                            "message": f"Configuration update success",
+                        }
+
+
+
+        except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
+                return JSONResponse(
+                    status_code=504,
+                    content={
+                        "status":"failed",
+                        "message":f"Cannot reach device {data.hostname}: {str(e)}",
+                        "hostname": data.hostname
+                    }
+                )
+
+        except Exception as e:
+                return JSONResponse(
+                    status_code=504,
+                    content={
+                        "status":"failed",
+                        "message":f"Error anomaly device {data.hostname}: {str(e)}",
+                        "hostname": data.hostname
+                    }
+                )
+
+
+class getDataPolicer(BaseModel):
+    hostname: str
+    ip_address: str
+    interface: str
+    logical_system: str
+    id_group: int
+    id_user: int
+
+
+@app.post("/get-policer")
+def get_policer(data: getDataPolicer):
+    now = datetime.now()
+    with engine.begin() as conn:
+        try:
+            with Device(host=data.ip_address, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
+               with Config(dev, mode="exclusive") as cfg:
+                    if data.logical_system == "no":
+                        filter_xml = etree.XML("""
+                        <configuration>
+                          <firewall>
+                            <policer/>
+                          </firewall>
+                        </configuration>
+                        """)
+                        cfg = dev.rpc.get_config(filter_xml=filter_xml)
+
+                        data_to_insert = []
+
+                        for policer in cfg.xpath('.//policer'):
+                            name = policer.findtext('name')
+                            attr_bw = policer.get('inactive')
+                            if attr_bw:
+                                status_bw = "Inactive"
+                            else:
+                                status_bw = "Active"
+                            if not name:
+                                continue
+                            if policer.find('if-exceeding') is not None:
+                                bandwidth = policer.findtext('if-exceeding/bandwidth-limit')
+                                burst = policer.findtext('if-exceeding/burst-size-limit')
+                            else:
+                                bandwidth = burst = None
+                            id_group = data.id_group
+                            id_user = data.id_user
+
+                            data_to_insert.append({
+                                "hostname": data.hostname,
+                                "policer_name": name,
+                                "bandwidth": bandwidth,
+                                "burst": burst,
+                                "status_bw": status_bw,
+                                "id_group": id_group,
+                                "id_user": id_user,
+                            })
+
+                        for row in data_to_insert:
+                            check_query = text("""
+                                SELECT 1 FROM table_bwm_bw
+                                WHERE policer_name = :policer_name AND hostname = :hostname
+                                LIMIT 1
+                            """)
+                            result = conn.execute(check_query, {
+                                "hostname": row["hostname"],
+                                "policer_name": row["policer_name"],
+                            }).fetchone()
+
+                            if result:
+                                continue
+
+                            conn.execute(
+                                text("""
+                                        INSERT INTO table_bwm_bw (hostname, policer_name, bandwidth, burst_limit, policer_status,
+                                        id_group, id_user, created_at)
+                                        VALUES (:hostname, :policer_name, :bandwidth, :burst, :status_bw,
+                                        :id_group, :id_user, NOW())
+                                """),
+                                {
+                                        "hostname": row['hostname'],
+                                        "policer_name": row['policer_name'],
+                                        "bandwidth": row['bandwidth'],
+                                        "burst": row['burst'],
+                                        "status_bw": row['status_bw'],
+                                        "id_group": row['id_group'],
+                                        "id_user": row['id_user'],
+                                }
+                            )
+                        return {
+                            "status": "success",
+                            "message": f"Configuration update success",
+                        }
+                    else:
+                        filter_xml = etree.XML(f'''
+                        <configuration>
+                        <logical-systems>
+                          <name>{data.hostname}</name>
+                          <firewall>
+                            <policer/>
+                          </firewall>
+                        </logical-systems>
+                        </configuration>
+                        ''')
+                        cfg = dev.rpc.get_config(filter_xml=filter_xml)
+
+                        data_to_insert = []
+
+                        for policer in cfg.xpath('.//policer'):
+                            name = policer.findtext('name')
+                            attr_bw = policer.get('inactive')
+                            if attr_bw:
+                                status_bw = "Inactive"
+                            else:
+                                status_bw = "Active"
+                            if not name:
+                                continue
+                            if policer.find('if-exceeding') is not None:
+                                bandwidth = policer.findtext('if-exceeding/bandwidth-limit')
+                                burst = policer.findtext('if-exceeding/burst-size-limit')
+                            else:
+                                bandwidth = burst = None
+                            id_group = data.id_group
+                            id_user = data.id_user
+
+                            data_to_insert.append({
+                                "hostname": data.hostname,
+                                "policer_name": name,
+                                "bandwidth": bandwidth,
+                                "burst": burst,
+                                "status_bw": status_bw,
+                                "id_group": id_group,
+                                "id_user": id_user,
+                            })
+
+                        for row in data_to_insert:
+                            check_query = text("""
+                                SELECT 1 FROM table_bwm_bw
+                                WHERE policer_name = :policer_name AND hostname = :hostname
+                                LIMIT 1
+                            """)
+                            result = conn.execute(check_query, {
+                                "hostname": row["hostname"],
+                                "policer_name": row["policer_name"],
+                            }).fetchone()
+
+                            if result:
+                                continue
+
+                            conn.execute(
+                                text("""
+                                        INSERT INTO table_bwm_bw (hostname, policer_name, bandwidth, burst_limit, policer_status,
+                                        id_group, id_user, created_at)
+                                        VALUES (:hostname, :policer_name, :bandwidth, :burst, :status_bw,
+                                        :id_group, :id_user, NOW())
+                                """),
+                                {
+                                        "hostname": row['hostname'],
+                                        "policer_name": row['policer_name'],
+                                        "bandwidth": row['bandwidth'],
+                                        "burst": row['burst'],
+                                        "status_bw": row['status_bw'],
+                                        "id_group": row['id_group'],
+                                        "id_user": row['id_user'],
+                                }
+                            )
+                        return {
+                            "status": "success",
+                            "message": f"Configuration update success",
+                        }
+
+        except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
+                return JSONResponse(
+                    status_code=504,
+                    content={
+                        "status":"failed",
+                        "message":f"Cannot reach device {data.hostname}: {str(e)}",
+                        "hostname": data.hostname
+                    }
+                )
+
+        except Exception as e:
+                return JSONResponse(
+                    status_code=504,
+                    content={
+                        "status":"failed",
+                        "message":f"Error anomaly device {data.hostname}: {str(e)}",
+                        "hostname": data.hostname
+                    }
+                )
+
+
