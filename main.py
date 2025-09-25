@@ -1068,6 +1068,7 @@ def get_client(data: getDataClient):
                         # Parsing data
                         interface_name = cfg.findtext('.//interface/name')
                         data_to_insert = []
+                        inserted_units = []
 
 
                         for unit in cfg.xpath('.//unit'):
@@ -1201,10 +1202,11 @@ def get_client(data: getDataClient):
                                         "id_user": row['id_user'],
                                 }
                             )
+                            inserted_units.append(row['unit_interface'])
                         return {
                             "status": "success",
-                            "message": f"Configuration update success",
-                        }
+                            "message": f"Configuration update success. Added unit interfaces: {', '.join(inserted_units) if inserted_units else 'No new unit interfaces added'}",                        
+                            }
                     else:
                         filter_xml = etree.XML(f'''
                         <configuration>
@@ -1224,6 +1226,7 @@ def get_client(data: getDataClient):
                         # Parsing data
                         interface_name = cfg.findtext('.//interface/name')
                         data_to_insert = []
+                        inserted_units = []
 
 
                         for unit in cfg.xpath('.//unit'):
@@ -1357,11 +1360,11 @@ def get_client(data: getDataClient):
                                         "id_user": row['id_user'],
                                 }
                             )
+                            inserted_units.append(row['unit_interface'])
                         return {
                             "status": "success",
-                            "message": f"Configuration update success",
-                        }
-
+                            "message": f"Configuration update success. Added unit interfaces: {', '.join(inserted_units) if inserted_units else 'No new unit interfaces added'}",
+                            }
 
 
         except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
