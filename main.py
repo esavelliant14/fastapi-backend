@@ -941,7 +941,7 @@ def checking_task():
         expired_rows = conn.execute(text("""
             SELECT id, description, hostname, interface, unit_interface, id_group, id_user
             FROM table_tes_client
-            WHERE status='Onprogress' AND bod_until <= :now
+            WHERE status='Onprogress' AND stop_at <= :now
         """), {"now": now}).fetchall()
 
         results = []
