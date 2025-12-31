@@ -1023,6 +1023,14 @@ def checking_task():
                                         "id_group": {row.id_group}
                                     }
                                 )
+                                conn.execute(text("""
+                                    UPDATE table_bwm_client SET status_unit='Inactive'
+                                    WHERE id=:id
+                                    AND description = :description
+                                    AND hostname = :hostname
+                                    AND interface = :interface
+                                    AND unit_interface = :unit_interface
+                                """), {"id": row.id, "description": row.description, "hostname": row.hostname, "interface": row.interface, "unit_interface": row.unit_interface})
                             else:
                                 results.append({
                                     "status": "failed",
