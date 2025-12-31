@@ -1019,7 +1019,7 @@ def checking_task():
                                         "status": "Success",
                                         "ip_address": "localhost",
                                         "agent": "backend",
-                                        "details": f"Disable client {row.description} interface={row.interface} unit={row.unit_interface} success, status change with Success
+                                        "details": f"Disable client {row.description} interface={row.interface} unit={row.unit_interface} success, status change with Success"
                                         "id_group": {row.id_group}
                                     }
                                 )
@@ -1097,7 +1097,7 @@ def checking_task():
                                             "status": "Success",
                                             "ip_address": "localhost",
                                             "agent": "backend",
-                                            "details": f"Disable client {row.description} interface={row.interface} unit={row.unit_interface} success, status change with Success,
+                                            "details": f"Disable client {row.description} interface={row.interface} unit={row.unit_interface} success, status change with Success"
                                             "id_group": {row.id_group}
                                         }
                                     )
