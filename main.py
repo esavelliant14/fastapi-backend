@@ -930,6 +930,206 @@ def rollback_bod():
         return {"results": results}
 
 
+
+### INI TES ###
+
+
+@app.get("/checking_task")
+def checking_task():
+    now = datetime.now()
+    with engine.begin() as conn:
+        expired_rows = conn.execute(text("""
+            SELECT id, description, hostname, interface, unit_interface, id_group, id_user
+            FROM table_tes_client
+            WHERE status='Onprogress' AND bod_until <= :now
+        """), {"now": now}).fetchall()
+
+        results = []
+
+        for row in expired_rows:
+            try:
+                router = conn.execute(
+                    text("SELECT ip_address, logical_system FROM table_bwm_rtr WHERE hostname=:h LIMIT 1"),
+                    {"h": row.hostname}
+                ).fetchone()
+
+                ip_device = router.ip_address
+                logical_system = router.logical_system
+                with Device(host=ip_device, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
+                    with Config(dev, mode="exclusive") as cfg:
+                        if logical_system == "no":
+
+                            filter_xml_check = etree.XML(f"""
+                                <configuration>
+                                  <interfaces>
+                                    <interface>
+                                      <name>{row.interface}</name>
+                                      <unit>
+                                        <name>{row.unit_interface}</name>
+                                      </unit>
+                                    </interface>
+                                  </interfaces>
+                                </configuration>
+                            """)
+                            cfg_get = dev.rpc.get_config(filter_xml=filter_xml_check)
+
+                            tes_config = f"""
+                            deactivate interfaces {row.interface} unit {row.unit_interface}
+                            deactivate interfaces {row.interface} unit {row.unit_interface}
+                            """
+                            cfg.load(tes_config, format="set")
+                            cfg.commit()
+
+                            filter_xml = etree.XML(f"""
+                                <configuration>
+                                  <interfaces>
+                                    <interface>
+                                      <name>{row.interface}</name>
+                                      <unit>
+                                        <name>{row.unit_interface}</name>
+                                      </unit>
+                                    </interface>
+                                  </interfaces>
+                                </configuration>
+                            """)
+                            cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                            unit = cfg_get.find('.//unit')
+                            attr_unit = unit.get('inactive')
+                            if attr_unit:
+                                # update status jadi Inactive
+                                conn.execute(text("""
+                                    UPDATE table_tes_client SET status='Success'
+                                    WHERE id=:id
+                                """), {"id": row.id})
+
+                                results.append({
+                                    "hostname": row.hostname,
+                                    "interface": row.interface,
+                                    "unit": row.unit_interface,
+                                    "status": "Disable success"
+                                })
+                                conn.execute(
+                                    text("""
+                                            INSERT INTO table_loggings (action_by, category_action, status, ip_address, agent, details, id_group, created_at)
+                                            VALUES (:action_by, :category_action, :status, :ip_address, :agent, :details, :id_group, NOW())
+                                    """),
+                                    {
+                                        "action_by": "Automation System",
+                                        "category_action": "Disable Client",
+                                        "status": "Success",
+                                        "ip_address": "localhost",
+                                        "agent": "backend",
+                                        "details": f"Disable client {row.description} interface={row.interface} unit={row.unit_interface} success, status change with Success
+                                        "id_group": {row.id_group}
+                                    }
+                                )
+                            else:
+                                results.append({
+                                    "status": "failed",
+                                })
+
+
+
+                        #jika logical system
+                        else:
+                            filter_xml_check = etree.XML(f"""
+                            <configuration>
+                                <logical-systems>
+                                    <name>{row.hostname}</name>
+                                    <interfaces>
+                                        <interface>
+                                          <name>{row.interface}</name>
+                                            <unit>
+                                                <name>{row.unit_interface}</name>
+                                            </unit>
+                                        </interface>
+                                  </interfaces>
+                                </logical-systems>
+                            </configuration>
+                            """)
+                            cfg_get = dev.rpc.get_config(filter_xml=filter_xml_check)
+                                rollback_config = f"""
+                                deactivate logical-systems {row.hostname} interfaces {row.interface} unit {row.unit_interface}
+                                deactivate logical-systems {row.hostname} interfaces {row.interface} unit {row.unit_interface}
+                                """
+                                cfg.load(rollback_config, format="set")
+                                cfg.commit()
+
+                                filter_xml = etree.XML(f"""
+                                <configuration>
+                                    <logical-systems>
+                                        <name>{row.hostname}</name>
+                                        <interfaces>
+                                            <interface>
+                                              <name>{row.interface}</name>
+                                                <unit>
+                                                    <name>{row.unit_interface}</name>
+                                                </unit>
+                                            </interface>
+                                      </interfaces>
+                                    </logical-systems>
+                                </configuration>
+                                """)
+                                cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
+                                unit = cfg_get.find('.//unit')
+                                attr_unit = unit.get('inactive')
+                                if attr_unit:
+                                    # update status jadi Inactive
+                                    conn.execute(text("""
+                                        UPDATE table_bwm_bod SET status='Success'
+                                        WHERE id=:id
+                                    """), {"id": row.id})
+
+                                    results.append({
+                                        "hostname": row.hostname,
+                                        "interface": row.interface,
+                                        "unit": row.unit_interface,
+                                        "status": "Disable success"
+                                    })
+                                    conn.execute(
+                                        text("""
+                                                INSERT INTO table_loggings (action_by, category_action, status, ip_address, agent, details, id_group, created_at)
+                                                VALUES (:action_by, :category_action, :status, :ip_address, :agent, :details, :id_group, NOW())
+                                        """),
+                                        {
+                                            "action_by": "Automation System",
+                                            "category_action": "Disable client",
+                                            "status": "Success",
+                                            "ip_address": "localhost",
+                                            "agent": "backend",
+                                            "details": f"Disable client {row.description} interface={row.interface} unit={row.unit_interface} success, status change with Success,
+                                            "id_group": {row.id_group}
+                                        }
+                                    )
+                                else:
+                                    results.append({
+                                        "status": "failed",
+                                    })
+
+
+
+
+            except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
+                results.append({
+                    "hostname": row.hostname,
+                    "interface": row.interface,
+                    "unit": row.unit_interface,
+                    "status": f"device unreachable: {str(e)}"
+                })
+            except Exception as e:
+                results.append({
+                    "hostname": row.hostname,
+                    "interface": row.interface,
+                    "unit": row.unit_interface,
+                    "status": f"error: {str(e)}"
+                })
+
+        return {"results": results}
+
+
+### INI END TEST ###
+
+
 class RefreshClientData(BaseModel):
     hostname: str
     interface: str
