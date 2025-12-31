@@ -934,7 +934,7 @@ def rollback_bod():
 ### INI TES ###
 
 
-@app.get("/checking_task")
+@app.get("/checking-task")
 def checking_task():
     now = datetime.now()
     with engine.begin() as conn:
