@@ -1191,7 +1191,7 @@ def rollback_auto_bod():
                                             "status": "Success",
                                             "ip_address": "localhost",
                                             "agent": "backend",
-                                            "details": f"Rollback for client {row.description} interface={row.interface} unit={row.unit_interface} success from BOD bandwidth(up/down)={row.bod_input_policer}/{row.bod_output_policer} to old bandwidth(up/down)={input_policer_check}/{output_policer_check}, status change with Inactive",
+                                            "details": f"Rollback via N8N for client {row.description} interface={row.interface} unit={row.unit_interface} success from BOD bandwidth(up/down)={row.bod_input_policer}/{row.bod_output_policer} to old bandwidth(up/down)={input_policer_check}/{output_policer_check}, status change with Inactive",
                                             "id_group": {row.id_group}
                                         }
                                     )
@@ -1212,7 +1212,7 @@ def rollback_auto_bod():
                                             "status": "Failed",
                                             "ip_address": "localhost",
                                             "agent": "backend",
-                                            "details": f"Rollback for client {row.description} interface={row.interface} unit={row.unit_interface} failed because policer at BOD time {row.bod_input_policer}/{row.bod_output_policer} with existing configuration {input_policer_check}/{output_policer_check} not match, status change with CRASH",
+                                            "details": f"Rollback via N8N for client {row.description} interface={row.interface} unit={row.unit_interface} failed because policer at BOD time {row.bod_input_policer}/{row.bod_output_policer} with existing configuration {input_policer_check}/{output_policer_check} not match, status change with CRASH",
                                             "id_group": {row.id_group}
                                     }
 
