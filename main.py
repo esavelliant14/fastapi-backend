@@ -10,6 +10,8 @@ from datetime import datetime
 import os, threading
 from dotenv import load_dotenv
 from jnpr.junos.exception import ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError
+from netmiko import ConnectHandler
+
 
 
 load_dotenv()
@@ -1099,253 +1101,6 @@ def receive_auto_bod(data: N8NBodData):
 #### N8N BOD END ####
 
 
-#### N8N BOD ROLLBACK ###
-
-@app.get("/rollback-auto-bod")
-def rollback_auto_bod():
-    now = datetime.now()
-    with engine.begin() as conn:
-        expired_rows = conn.execute(text("""
-            SELECT id, description, hostname, interface, unit_interface, old_input_policer, old_output_policer, bod_input_policer, bod_output_policer, id_group
-            FROM table_bwm_bod
-            WHERE status='Active' AND bod_until <= :now
-        """), {"now": now}).fetchall()
-
-        results = []
-
-        for row in expired_rows:
-            try:
-                router = conn.execute(
-                    text("SELECT ip_address, logical_system FROM table_bwm_rtr WHERE hostname=:h LIMIT 1"),
-                    {"h": row.hostname}
-                ).fetchone()
-
-                ip_device = router.ip_address
-                logical_system = router.logical_system
-                with Device(host=ip_device, user=JUNIPER_USER, passwd=JUNIPER_PASS, timeout=10) as dev:
-                    with Config(dev, mode="exclusive") as cfg:
-                        if logical_system == "no":
-
-                            filter_xml_check = etree.XML(f"""
-                                <configuration>
-                                  <interfaces>
-                                    <interface>
-                                      <name>{row.interface}</name>
-                                      <unit>
-                                        <name>{row.unit_interface}</name>
-                                      </unit>
-                                    </interface>
-                                  </interfaces>
-                                </configuration>
-                            """)
-                            cfg_get = dev.rpc.get_config(filter_xml=filter_xml_check)
-                            input_policer_check = cfg_get.findtext('.//family/inet/policer/input')
-                            output_policer_check = cfg_get.findtext('.//family/inet/policer/output')
-
-                            if input_policer_check == row.bod_input_policer and output_policer_check == row.bod_output_policer:
-
-                                rollback_config = f"""
-                                set interfaces {row.interface} unit {row.unit_interface} family inet policer input {row.old_input_policer}
-                                set interfaces {row.interface} unit {row.unit_interface} family inet policer output {row.old_output_policer}
-                                set interfaces {row.interface} unit {row.unit_interface} bandwidth {row.old_input_policer}
-                                """
-                                cfg.load(rollback_config, format="set")
-                                cfg.commit()
-
-                                filter_xml = etree.XML(f"""
-                                    <configuration>
-                                      <interfaces>
-                                        <interface>
-                                          <name>{row.interface}</name>
-                                          <unit>
-                                            <name>{row.unit_interface}</name>
-                                          </unit>
-                                        </interface>
-                                      </interfaces>
-                                    </configuration>
-                                """)
-                                cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
-                                input_policer = cfg_get.findtext('.//family/inet/policer/input')
-                                output_policer = cfg_get.findtext('.//family/inet/policer/output')
-                                if input_policer == row.old_input_policer and output_policer == row.old_output_policer:
-                                    # update status jadi Inactive
-                                    conn.execute(text("""
-                                        UPDATE table_bwm_bod SET status='Inactive'
-                                        WHERE id=:id
-                                    """), {"id": row.id})
-
-                                    results.append({
-                                        "hostname": row.hostname,
-                                        "interface": row.interface,
-                                        "unit": row.unit_interface,
-                                        "status": "rollback success"
-                                    })
-                                    conn.execute(
-                                        text("""
-                                                INSERT INTO table_loggings (action_by, category_action, status, ip_address, agent, details, id_group, created_at)
-                                                VALUES (:action_by, :category_action, :status, :ip_address, :agent, :details, :id_group, NOW())
-                                        """),
-                                        {
-                                            "action_by": "Automation System",
-                                            "category_action": "Rollback BOD",
-                                            "status": "Success",
-                                            "ip_address": "localhost",
-                                            "agent": "backend",
-                                            "details": f"Rollback via N8N for client {row.description} interface={row.interface} unit={row.unit_interface} success from BOD bandwidth(up/down)={row.bod_input_policer}/{row.bod_output_policer} to old bandwidth(up/down)={input_policer_check}/{output_policer_check}, status change with Inactive",
-                                            "id_group": {row.id_group}
-                                        }
-                                    )
-                                else:
-                                    results.append({
-                                        "status": "failed",
-                                    })
-
-                            else:
-                                conn.execute(
-                                    text("""
-                                            INSERT INTO table_loggings (action_by, category_action, status, ip_address, agent, details, id_group, created_at)
-                                            VALUES (:action_by, :category_action, :status, :ip_address, :agent, :details, :id_group, NOW())
-                                    """),
-                                    {
-                                            "action_by": "Automation System",
-                                            "category_action": "Rollback BOD",
-                                            "status": "Failed",
-                                            "ip_address": "localhost",
-                                            "agent": "backend",
-                                            "details": f"Rollback via N8N for client {row.description} interface={row.interface} unit={row.unit_interface} failed because policer at BOD time {row.bod_input_policer}/{row.bod_output_policer} with existing configuration {input_policer_check}/{output_policer_check} not match, status change with CRASH",
-                                            "id_group": {row.id_group}
-                                    }
-
-                                )
-                                conn.execute(text("""
-                                    UPDATE table_bwm_bod SET status='CRASH'
-                                    WHERE id=:id
-                                """), {"id": row.id})
-
-
-
-                        #jika logical system
-                        else:
-                            filter_xml_check = etree.XML(f"""
-                            <configuration>
-                                <logical-systems>
-                                    <name>{row.hostname}</name>
-                                    <interfaces>
-                                        <interface>
-                                          <name>{row.interface}</name>
-                                            <unit>
-                                                <name>{row.unit_interface}</name>
-                                            </unit>
-                                        </interface>
-                                  </interfaces>
-                                </logical-systems>
-                            </configuration>
-                            """)
-                            cfg_get = dev.rpc.get_config(filter_xml=filter_xml_check)
-                            input_policer_check = cfg_get.findtext('.//family/inet/policer/input')
-                            output_policer_check = cfg_get.findtext('.//family/inet/policer/output')
-                            if input_policer_check == row.bod_input_policer and output_policer_check == row.bod_output_policer:
-                                rollback_config = f"""
-                                set logical-systems {row.hostname} interfaces {row.interface} unit {row.unit_interface} family inet policer input {row.old_input_policer}
-                                set logical-systems {row.hostname} interfaces {row.interface} unit {row.unit_interface} family inet policer output {row.old_output_policer}
-                                set logical-systems {row.hostname} interfaces {row.interface} unit {row.unit_interface} bandwidth {row.old_input_policer}
-                                """
-                                cfg.load(rollback_config, format="set")
-                                cfg.commit()
-
-                                filter_xml = etree.XML(f"""
-                                <configuration>
-                                    <logical-systems>
-                                        <name>{row.hostname}</name>
-                                        <interfaces>
-                                            <interface>
-                                              <name>{row.interface}</name>
-                                                <unit>
-                                                    <name>{row.unit_interface}</name>
-                                                </unit>
-                                            </interface>
-                                      </interfaces>
-                                    </logical-systems>
-                                </configuration>
-                                """)
-                                cfg_get = dev.rpc.get_config(filter_xml=filter_xml)
-                                input_policer = cfg_get.findtext('.//family/inet/policer/input')
-                                output_policer = cfg_get.findtext('.//family/inet/policer/output')
-                                if input_policer == row.old_input_policer and output_policer == row.old_output_policer:
-                                    # update status jadi Inactive
-                                    conn.execute(text("""
-                                        UPDATE table_bwm_bod SET status='Inactive'
-                                        WHERE id=:id
-                                    """), {"id": row.id})
-
-                                    results.append({
-                                        "hostname": row.hostname,
-                                        "interface": row.interface,
-                                        "unit": row.unit_interface,
-                                        "status": "rollback success"
-                                    })
-                                    conn.execute(
-                                        text("""
-                                                INSERT INTO table_loggings (action_by, category_action, status, ip_address, agent, details, id_group, created_at)
-                                                VALUES (:action_by, :category_action, :status, :ip_address, :agent, :details, :id_group, NOW())
-                                        """),
-                                        {
-                                            "action_by": "Automation System",
-                                            "category_action": "Rollback BOD",
-                                            "status": "Success",
-                                            "ip_address": "localhost",
-                                            "agent": "backend",
-                                            "details": f"Rollback for client {row.description} interface={row.interface} unit={row.unit_interface} success, status change with Inactive",
-                                            "id_group": {row.id_group}
-                                        }
-                                    )
-                                else:
-                                    results.append({
-                                        "status": "failed",
-                                    })
-                            else:
-                                conn.execute(
-                                    text("""
-                                            INSERT INTO table_loggings (action_by, category_action, status, ip_address, agent, details, id_group, created_at)
-                                            VALUES (:action_by, :category_action, :status, :ip_address, :agent, :details, :id_group, NOW())
-                                    """),
-                                    {
-                                            "action_by": "Automation System",
-                                            "category_action": "Rollback BOD",
-                                            "status": "Failed",
-                                            "ip_address": "localhost",
-                                            "agent": "backend",
-                                            "details": f"Rollback for client {row.description} interface={row.interface} unit={row.unit_interface} failed because policer at BOD time {row.bod_input_policer}/{row.bod_output_policer} with existing configuration {input_policer_check}/{output_policer_check} not match, status change with CRASH",
-                                            "id_group": {row.id_group}
-                                    }
-
-                                )
-                                conn.execute(text("""
-                                    UPDATE table_bwm_bod SET status='CRASH'
-                                    WHERE id=:id
-                                """), {"id": row.id})
-
-
-
-            except (ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError) as e:
-                results.append({
-                    "hostname": row.hostname,
-                    "interface": row.interface,
-                    "unit": row.unit_interface,
-                    "status": f"device unreachable: {str(e)}"
-                })
-            except Exception as e:
-                results.append({
-                    "hostname": row.hostname,
-                    "interface": row.interface,
-                    "unit": row.unit_interface,
-                    "status": f"error: {str(e)}"
-                })
-
-        return {"results": results}
-
-#### N8N BOD ROLLBACK END ####
-
 
 ### INI TES ###
 
@@ -2204,4 +1959,103 @@ def get_policer(data: getDataPolicer):
                     }
                 )
 
+
+
+#### DEVICE MAP ####
+DEVICE_MAP = {
+    "MikroTik": "mikrotik_routeros",
+    "H3C": "h3c_comware"
+}
+
+
+MIKROTIK_REGEX = {
+    "youtube.com": '^.+(youtube).*\$|o-o.preferred.pttelkom-|a.youtube.com|b.youtube.com|c.youtube.com|d.youtube.com|e.youtube.com|f.youtube.com|g.youtube.com|h.youtube.com|i.youtube.com|j.youtube.com|l.youtube.com.*\$',
+}
+
+def build_mikrotik_commands(action, website):
+    website = website.lower()
+
+    # 1. Cek apakah website punya template khusus
+    regex = MIKROTIK_REGEX.get(website)
+
+    # 2. Kalau tidak ada → fallback ke generic pattern
+    if not regex:
+        regex = f"^.+({website}).*\$"
+
+    # 3. Action BLOCK
+    if action == "block":
+        return [
+            f'ip firewall layer7-protocol add name="L7_{website.upper()}" comment="SmartCPE_{website.upper()}" regexp="{regex}"',
+            f'ip firewall filter add chain=forward comment="SmartCPE_BLOKIR_{website.upper()}" layer7-protocol="L7_{website.upper()}" action=drop'
+        ]
+
+    # 4. Action UNBLOCK
+    if action == "unblock":
+        return [
+            f'ip firewall filter remove [find comment="SmartCPE_BLOKIR_{website.upper()}" layer7-protocol="L7_{website.upper()}"]',
+            f'ip firewall layer7-protocol remove [find name="L7_{website.upper()}"]'
+        ]
+
+    return []
+
+def build_h3c_commands(action, website):
+    if action == "block":
+        return [
+            "system-view",
+            "acl number 3000",
+            f"rule deny source any destination {website}",
+            "quit"
+        ]
+    return []
+
+
+
+
+class postSmartCpe(BaseModel):
+    ip: str
+    action: str
+    website: str
+    lokasi: str
+    port: int
+    wan_interface: str
+    brand: str 
+    date: str
+    id_group: int
+    id_user: int
+
+@app.post("/post-smartcpe")
+def postSmartCpe(data: postSmartCpe):
+    try:
+        device = DEVICE_MAP.get(data.brand)
+        if not device:
+            return {"status": "failed", "message": "Brand tidak dikenal"}
+
+        # Tentukan command list
+        if data.brand == "MikroTik":
+            command_list = build_mikrotik_commands(data.action, data.website)
+
+        elif data.brand == "H3C":
+            command_list = build_h3c_commands(data.action, data.website)
+
+        r1 = {
+            "device_type": device,
+            "ip": data.ip,
+            "username": "supertools",
+            "password": "1q2w3e4r",
+        }
+
+        conn = ConnectHandler(**r1)
+        output = conn.send_config_set(command_list)
+        conn.disconnect()
+
+        return {"status": "success", "output": f"Success for blocking {data.website}"}
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "failed",
+                "message": f"Error anomaly device {data.ip}: {str(e)}",
+            }
+        )
 
