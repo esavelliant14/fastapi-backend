@@ -1983,7 +1983,7 @@ def build_mikrotik_commands(action, website):
         regex = f"^.+({website}).*\$"
 
     # 3. Action BLOCK
-    if action == "block":
+    if action == "blokir":
         return [
             f'ip firewall layer7-protocol add name="L7_{website.upper()}" comment="SmartCPE_{website.upper()}" regexp="{regex}"',
             f'ip firewall filter add chain=forward comment="SmartCPE_BLOKIR_{website.upper()}" layer7-protocol="L7_{website.upper()}" action=drop'
