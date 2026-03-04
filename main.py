@@ -2019,7 +2019,7 @@ class postSmartCpe(BaseModel):
     port: int
     wan_interface: str
     brand: str 
-    date: str
+    timestamp: str
     id_group: int
     id_user: int
 
