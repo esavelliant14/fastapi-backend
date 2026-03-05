@@ -2155,3 +2155,231 @@ def postSmartCpe(data: postSmartCpe):
             }
         )
 
+
+
+# ============================================================
+# PAYLOAD MODEL
+# ============================================================
+
+class postSmartCpeQos(BaseModel):
+    ip: str
+    action: str
+    website: str
+    lokasi: str
+    port: int
+    wan_interface: str
+    brand: str 
+    id_group: int
+    id_user: int
+    start_time: str
+    end_time: str
+    app_service: str
+    bandwidth: str
+    lan_interface: str
+
+
+# ============================================================
+# DEVICE MAP
+# ============================================================
+
+DEVICE_MAP = {
+    "MikroTik": "mikrotik_routeros",
+    "H3C": "h3c_comware"
+}
+
+
+# ============================================================
+# SERVICE COMMAND SLOTS (EDIT DI SINI)
+# ============================================================
+
+# -----------------------------
+# MIKROTIK SERVICE COMMANDS
+# -----------------------------
+
+def mikrotik_zoom_qos(lan_interface, bandwidth, comment):
+    return [
+        # === ZOOM RULES (SUDAH ADA) ===
+        f'ip firewall mangle add chain=prerouting protocol=tcp dst-port="3478,3479,5090,5091,8801-8810" action=mark-connection new-connection-mark=conn_zoom passthrough=yes comment="SmartCPE_QOS_{comment.upper()}"',
+        f'ip firewall mangle add chain=prerouting protocol=udp dst-port="3478,3479,5090,5091,8801-8810" action=mark-connection new-connection-mark=conn_zoom passthrough=yes comment="SmartCPE_QOS_{comment.upper()}"',
+        f'ip firewall mangle add chain=forward connection-mark=conn_zoom action=mark-packet new-packet-mark=packet_zoom comment="SmartCPE_QOS_{comment.upper()}"',
+        f'queue simple add name=QOS_ZOOM target="{lan_interface}" max-limit="{bandwidth}/{bandwidth}" packet-marks=packet_zoom limit-at="{bandwidth}/{bandwidth}" priority="1/1" comment="SmartCPE_QOS_{comment.upper()}" place-before="QOS_GLOBAL"'
+    ]
+
+
+def mikrotik_gmeet_qos(wan_interface, bandwidth, comment):
+    return [
+        # === SLOT GOOGLE MEET ===
+        # isi sendiri nanti
+        f'# GMEET RULES HERE FOR {comment}'
+    ]
+
+
+def mikrotik_teams_qos(wan_interface, bandwidth, comment):
+    return [
+        # === SLOT MICROSOFT TEAMS ===
+        # isi sendiri nanti
+        f'# TEAMS RULES HERE FOR {comment}'
+    ]
+
+
+def mikrotik_unqos(comment):
+    return [
+        f'/ip firewall mangle remove [find comment="SmartCPE_QOS_{comment.upper()}"]',
+        f'/queue simple remove [find comment="SmartCPE_QOS_{comment.upper()}"]'
+    ]
+
+
+# -----------------------------
+# H3C SERVICE COMMANDS
+# -----------------------------
+
+def h3c_zoom_qos(interface, comment):
+    return [
+        # === ZOOM RULES (SUDAH ADA) ===
+        "acl number 3000",
+        "rule 10 permit tcp destination-port eq 3478",
+        "rule 20 permit tcp destination-port eq 3479",
+        "rule 30 permit tcp destination-port eq 5090",
+        "rule 40 permit tcp destination-port eq 5091",
+        "rule 50 permit tcp destination-port range 8801 8810",
+        "rule 60 permit udp destination-port eq 3478",
+        "rule 70 permit udp destination-port eq 3479",
+        "rule 80 permit udp destination-port eq 5090",
+        "rule 90 permit udp destination-port eq 5091",
+        "rule 100 permit udp destination-port range 8801 8810",
+        "quit",
+
+        f"qos classifier {comment} operator or",
+        "if-match acl 3000",
+        "quit",
+
+        f"qos behavior {comment}_BEHAVIOR",
+        "priority 5",
+        "quit",
+
+        f"qos policy {comment}_POLICY",
+        f"classifier {comment} behavior {comment}_BEHAVIOR",
+        "quit",
+
+        f"interface {interface}",
+        f"qos apply policy {comment}_POLICY inbound",
+        "quit"
+    ]
+
+
+def h3c_gmeet_qos(interface, comment):
+    return [
+        # === SLOT GOOGLE MEET ===
+        f'# GMEET RULES HERE FOR {comment}'
+    ]
+
+
+def h3c_teams_qos(interface, comment):
+    return [
+        # === SLOT MICROSOFT TEAMS ===
+        f'# TEAMS RULES HERE FOR {comment}'
+    ]
+
+
+def h3c_unqos(interface, comment):
+    return [
+        f"interface {interface}",
+        f"undo qos apply policy {comment}_POLICY inbound",
+        "quit",
+
+        f"undo qos policy {comment}_POLICY",
+        f"undo qos behavior {comment}_BEHAVIOR",
+        f"undo qos classifier {comment}",
+        "undo acl 3000"
+    ]
+
+
+# ============================================================
+# SERVICE ROUTER
+# ============================================================
+
+def get_service_commands(brand, service, action, wan_interface, lan_interface, bandwidth, comment):
+
+    # MIKROTIK
+    if brand == "MikroTik":
+        if action == "unqos":
+            return mikrotik_unqos(comment)
+
+        if service == "zoom":
+            return mikrotik_zoom_qos(wan_interface, bandwidth, comment)
+        if service == "gmeet":
+            return mikrotik_gmeet_qos(wan_interface, bandwidth, comment)
+        if service == "teams":
+            return mikrotik_teams_qos(wan_interface, bandwidth, comment)
+
+    # H3C
+    if brand == "H3C":
+        if action == "unqos":
+            return h3c_unqos(lan_interface, comment)
+
+        if service == "zoom":
+            return h3c_zoom_qos(lan_interface, comment)
+        if service == "gmeet":
+            return h3c_gmeet_qos(lan_interface, comment)
+        if service == "teams":
+            return h3c_teams_qos(lan_interface, comment)
+
+    return [f"# UNKNOWN SERVICE {service}"]
+
+
+# ============================================================
+# EXECUTOR
+# ============================================================
+
+def execute_qos(data: postSmartCpeQos):
+    brand = data.brand
+    service = data.app_service.lower()
+    action = data.action
+    comment = data.app_service
+    bandwidth = data.bandwidth
+    wan_interface = data.wan_interface
+    lan_interface = data.lan_interface
+
+    device_type = DEVICE_MAP.get(brand)
+    if not device_type:
+        return {"status": "failed", "message": "Unknown brand"}
+
+    commands = get_service_commands(
+        brand=brand,
+        service=service,
+        action=action,
+        wan_interface=wan_interface,
+        lan_interface=lan_interface,
+        bandwidth=bandwidth,
+        comment=comment
+    )
+
+    conn = ConnectHandler(
+        device_type=device_type,
+        ip=data.ip,
+        username="supertools",
+        password="1q2w3e4r",
+        port=data.port
+    )
+
+    output = conn.send_config_set(commands)
+    conn.disconnect()
+
+    return {
+        "status": "success",
+        "brand": brand,
+        "service": service,
+        "action": action,
+        "commands_sent": commands,
+        "output": output
+    }
+
+
+# ============================================================
+# FASTAPI ENDPOINT
+# ============================================================
+
+@app.post("/post-smartcpe-qos")
+def postSmartCpeQoS(data: postSmartCpeQos):
+    return execute_qos(data)
+
