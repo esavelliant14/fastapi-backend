@@ -2038,7 +2038,7 @@ def build_h3c_commands(action, website):
             f"undo network host name *.{website.lower()}",
             "quit"
         ]
-    if action == "list":
+    if action == "listblock":
         return [
             "display object-group ip address name BLOCK-DOMAIN",
         ]
@@ -2089,7 +2089,7 @@ def postSmartCpe(data: postSmartCpe):
         # ============================
         # H3C SHOW LIST
         # ============================
-        if data.brand == "H3C" and data.action in ["show", "list"]:
+        if data.brand == "H3C" and data.action in ["show", "listblock"]:
             domains = h3c_show_blocked_domains(
                 ip=data.ip,
                 username="supertools",
@@ -2142,7 +2142,7 @@ def postSmartCpe(data: postSmartCpe):
         return {
             "status": "success",
             "action": data.action,
-            "website": data.website,
+            "website": website_value,
             "blocked_domains": domains
         }
 
