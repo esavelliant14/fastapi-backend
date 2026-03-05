@@ -2164,7 +2164,6 @@ def postSmartCpe(data: postSmartCpe):
 class postSmartCpeQos(BaseModel):
     ip: str
     action: str
-    website: str
     lokasi: str
     port: int
     wan_interface: str
@@ -2227,6 +2226,26 @@ def mikrotik_unqos(comment):
         f'/ip firewall mangle remove [find comment="SmartCPE_QOS_{comment.upper()}"]',
         f'/queue simple remove [find comment="SmartCPE_QOS_{comment.upper()}"]'
     ]
+
+
+def mikrotik_list_qos(conn):
+    # Jalankan command persis seperti yang lu minta
+    cmd = ':foreach i in=[/queue simple find where comment~"SmartCPE_QOS"] do={ :put [/queue simple get $i comment] }'
+    output = conn.send_command(cmd)
+
+    lines = output.split("\n")
+    results = []
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith("SmartCPE_QOS_"):
+            clean = line.replace("SmartCPE_QOS_", "").lower()
+            results.append(clean)
+
+    return results
+
+
+
 
 
 # -----------------------------
@@ -2343,6 +2362,33 @@ def execute_qos(data: postSmartCpeQos):
     device_type = DEVICE_MAP.get(brand)
     if not device_type:
         return {"status": "failed", "message": "Unknown brand"}
+        
+    conn = ConnectHandler(
+        device_type=device_type,
+        ip=data.ip,
+        username="supertools",
+        password="1q2w3e4r",
+        port=data.port
+    )
+
+    # ============================
+    # HANDLE LISTQOS
+    # ============================
+    if action == "listqos":
+        if brand == "MikroTik":
+            qos_list = mikrotik_list_qos(conn)
+            conn.disconnect()
+            return {
+                "status": "success",
+                "action": "listqos",
+                "qos_list": qos_list
+            }
+        else:
+            conn.disconnect()
+            return {
+                "status": "failed",
+                "message": "listqos only supported for Mikrotik"
+            }
 
     commands = get_service_commands(
         brand=brand,
@@ -2382,4 +2428,3 @@ def execute_qos(data: postSmartCpeQos):
 @app.post("/post-smartcpe-qos")
 def postSmartCpeQoS(data: postSmartCpeQos):
     return execute_qos(data)
-
