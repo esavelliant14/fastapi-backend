@@ -1986,27 +1986,83 @@ def build_mikrotik_commands(action, website):
     if action == "block":
         return [
             f'ip firewall layer7-protocol add name="L7_{website.upper()}" comment="SmartCPE_{website.upper()}" regexp="{regex}"',
-            f'ip firewall filter add chain=forward comment="SmartCPE_BLOKIR_{website.upper()}" layer7-protocol="L7_{website.upper()}" action=drop'
+            f'ip firewall filter add chain=forward comment="SmartCPE_BLOCK_{website.upper()}" layer7-protocol="L7_{website.upper()}" action=drop'
         ]
 
     # 4. Action UNBLOCK
     if action == "unblock":
         return [
-            f'ip firewall filter remove [find comment="SmartCPE_BLOKIR_{website.upper()}" layer7-protocol="L7_{website.upper()}"]',
+            f'ip firewall filter remove [find comment="SmartCPE_BLOCK_{website.upper()}" layer7-protocol="L7_{website.upper()}"]',
             f'ip firewall layer7-protocol remove [find name="L7_{website.upper()}"]'
         ]
 
     return []
 
+
+def mikrotik_show_blocked_domains(ip, username, password, port=22):
+    conn = ConnectHandler(
+        device_type="mikrotik_routeros",
+        ip=ip,
+        username=username,
+        password=password,
+        port=port
+    )
+
+    script = r''':foreach i in=[/ip firewall filter find where comment~"SmartCPE_BLOCK"] do={ :put [/ip firewall filter get $i comment] }'''
+
+    output = conn.send_command(script)
+    conn.disconnect()
+
+    domains = []
+    for line in output.splitlines():
+        if "SmartCPE_BLOCK_" in line:
+            domain = line.replace("SmartCPE_BLOCK_", "")
+            domain = domain.lower().strip()
+            domains.append(domain)
+
+    return domains
+
+
 def build_h3c_commands(action, website):
     if action == "block":
         return [
-            "system-view",
-            "acl number 3000",
-            f"rule deny source any destination {website}",
+            "object-group ip address BLOCK-DOMAIN",
+            f"network host name {website.lower()}",
+            f"network host name *.{website.lower()}",
             "quit"
         ]
+    if action == "unblock":
+        return [
+            "object-group ip address BLOCK-DOMAIN",
+            f"undo network host name {website.lower()}",
+            f"undo network host name *.{website.lower()}",
+            "quit"
+        ]
+    if action == "list":
+        return [
+            "display object-group ip address name BLOCK-DOMAIN",
+        ]
     return []
+
+
+def h3c_show_blocked_domains(ip, username, password, port=22, object_group="BLOCK-DOMAIN"):
+    conn = ConnectHandler(
+        device_type="h3c_comware",
+        ip=ip,
+        username=username,
+        password=password,
+        port=port
+    )
+
+    output = conn.send_command(f"display object-group name {object_group}")
+    conn.disconnect()
+
+    clean = output.replace("\r", "").strip()
+
+    pattern = r"\d+\s+network\s+host\s+name\s+(.+)"
+    domains = re.findall(pattern, clean)
+
+    return domains
 
 
 
@@ -2030,6 +2086,23 @@ def postSmartCpe(data: postSmartCpe):
         if not device:
             return {"status": "failed", "message": "Brand tidak dikenal"}
 
+        # ============================
+        # H3C SHOW LIST
+        # ============================
+        if data.brand == "H3C" and data.action in ["show", "list"]:
+            domains = h3c_show_blocked_domains(
+                ip=data.ip,
+                username="supertools",
+                password="1q2w3e4r",
+                port=data.port
+            )
+
+            return {
+                "status": "success",
+                "action": "show",
+                "blocked_domains": domains
+            }
+
         # Tentukan command list
         if data.brand == "MikroTik":
             command_list = build_mikrotik_commands(data.action, data.website)
@@ -2048,7 +2121,30 @@ def postSmartCpe(data: postSmartCpe):
         output = conn.send_config_set(command_list)
         conn.disconnect()
 
-        return {"status": "success", "output": f"Success for blocking {data.website}"}
+
+        domains = None
+        if data.brand == "H3C":
+            domains = h3c_show_blocked_domains(
+                ip=data.ip,
+                username="supertools",
+                password="1q2w3e4r",
+                port=data.port
+            )
+
+        if data.brand == "MikroTik":
+            domains = mikrotik_show_blocked_domains(
+                ip=data.ip,
+                username="supertools",
+                password="1q2w3e4r",
+                port=data.port
+            )
+
+        return {
+            "status": "success",
+            "action": data.action,
+            "website": data.website,
+            "blocked_domains": domains
+        }
 
     except Exception as e:
         return JSONResponse(
