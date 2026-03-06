@@ -11,6 +11,7 @@ import os, threading
 from dotenv import load_dotenv
 from jnpr.junos.exception import ConnectError, ConnectRefusedError, ConnectAuthError, RpcTimeoutError
 from netmiko import ConnectHandler
+import re
 
 
 
