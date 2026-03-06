@@ -2429,3 +2429,299 @@ def execute_qos(data: postSmartCpeQos):
 @app.post("/post-smartcpe-qos")
 def postSmartCpeQoS(data: postSmartCpeQos):
     return execute_qos(data)
+
+
+
+
+# ============================================================
+# PAYLOAD MODEL
+# ============================================================
+
+class postSmartCpeLimiter(BaseModel):
+    ip: str
+    action: str
+    lokasi: str
+    port: int
+    wan_interface: str
+    brand: str 
+    id_group: int
+    id_user: int
+    bandwidth: str
+    limit: str
+    timestamp: str
+
+
+def convert_to_kbps(value: str) -> int:
+    """
+    Convert bandwidth string (e.g. '50M', '50m', '50000k', '1G') to integer kbps.
+    """
+    v = value.strip().lower()
+
+    # remove unwanted characters
+    v = v.replace("bps", "").replace(" ", "")
+
+    # detect unit
+    if v.endswith("g"):
+        num = float(v[:-1])
+        return int(num * 1_000_000)
+
+    if v.endswith("m"):
+        num = float(v[:-1])
+        return int(num * 1_000)
+
+    if v.endswith("k"):
+        num = float(v[:-1])
+        return int(num)
+
+    # no unit → assume Mbps
+    return int(float(v) * 1000)
+
+
+
+# ============================================================
+# DEVICE MAP
+# ============================================================
+
+DEVICE_MAP = {
+    "MikroTik": "mikrotik_routeros",
+    "H3C": "h3c_comware"
+}
+
+
+# ============================================================
+# MIKROTIK LIMITER COMMANDS
+# ============================================================
+
+def mikrotik_set_limit(limit):
+    return [
+        f'/queue simple set max-limit={limit}/{limit} [find name="QOS_GLOBAL"]'
+    ]
+
+def mikrotik_unlimit(bandwidth):
+    return [
+        f'/queue simple set max-limit={bandwidth}/{bandwidth} [find name="QOS_GLOBAL"]'
+    ]
+
+def mikrotik_list_limit(conn):
+    output = conn.send_command('/queue simple print detail where name="QOS_GLOBAL"')
+
+    limit_value = None
+
+    for line in output.split("\n"):
+        line = line.strip()
+
+        if "max-limit" in line:
+            try:
+                # Format 1: max-limit="200M/200M"
+                if 'max-limit="' in line:
+                    part = line.split('max-limit="')[1]
+                    limit_value = part.split('"')[0]
+                # Format 2: max-limit=200M/200M
+                else:
+                    part = line.split("max-limit=")[1]
+                    limit_value = part.split()[0]
+
+                break
+            except:
+                pass
+
+    if not limit_value:
+        return None
+
+    # Ambil hanya angka depan sebelum "/"
+    clean = limit_value.split("/")[0]  # contoh: "200M"
+
+    return {
+        "download": clean,
+        "upload": clean
+    }
+
+
+
+
+# ============================================================
+# H3C LIMITER COMMANDS (SLOT KOSONG)
+# ============================================================
+
+def h3c_set_limit(kbps, wan_interface):
+    return [
+        f'interface {wan_interface}',
+        f'qos car inbound any cir {kbps}',
+        f'qos car outbound any cir {kbps}',
+
+    ]
+
+def h3c_unlimit(kbps, wan_interface):
+    return [
+        f'interface {wan_interface}',
+        f'qos car inbound any cir {kbps}',
+        f'qos car outbound any cir {kbps}',
+    ]
+
+def h3c_list_limit(conn, wan_interface):
+    # Ambil config hanya dari interface yang diminta user
+    cmd = f"display current-configuration interface {wan_interface}"
+    output = conn.send_command(cmd)
+
+    lines = output.split("\n")
+
+    inbound_cir = None
+    outbound_cir = None
+    iface = None
+
+    for line in lines:
+        line = line.strip()
+
+        # detect interface name
+        if line.startswith("interface "):
+            iface = line.replace("interface ", "").strip()
+
+        # detect inbound cir
+        if "qos car inbound" in line and "cir" in line:
+            try:
+                inbound_cir = int(line.split("cir")[1].split()[0])
+            except:
+                inbound_cir = None
+
+        # detect outbound cir
+        if "qos car outbound" in line and "cir" in line:
+            try:
+                outbound_cir = int(line.split("cir")[1].split()[0])
+            except:
+                outbound_cir = None
+
+
+            # convert kbps → Mbps
+    inbound_mbps = int(inbound_cir / 1000) if inbound_cir else None
+    outbound_mbps = int(outbound_cir / 1000) if outbound_cir else None
+
+    return {
+        "interface": iface,
+        "download_mbps": inbound_mbps,
+        "upload_mbps": outbound_mbps
+    }
+
+
+
+# ============================================================
+# EXECUTOR
+# ============================================================
+
+def execute_limit(data: postSmartCpeLimiter):
+    brand = data.brand
+    action = data.action
+    limit = data.limit
+    bandwidth = data.bandwidth
+    wan_interface = data.wan_interface
+
+    device_type = DEVICE_MAP.get(brand)
+    if not device_type:
+        return {"status": "failed", "message": "Unknown brand"}
+
+    conn = ConnectHandler(
+        device_type=device_type,
+        ip=data.ip,
+        username="supertools",
+        password="1q2w3e4r",
+        port=data.port
+    )
+
+    # ============================
+    # MIKROTIK LIMITER
+    # ============================
+    if brand == "MikroTik":
+
+        if action == "setlimit":
+            commands = mikrotik_set_limit(limit)
+            output = conn.send_config_set(commands)
+            conn.disconnect()
+            return {
+                "status": "success",
+                "brand": brand,
+                "action": action,
+                "limit": limit,
+                "commands_sent": commands,
+                "output": output
+            }
+
+        elif action == "unsetlimit":
+            commands = mikrotik_unlimit(bandwidth)
+            output = conn.send_config_set(commands)
+            conn.disconnect()
+            return {
+                "status": "success",
+                "brand": brand,
+                "action": action,
+                "commands_sent": commands,
+                "output": output
+            }
+
+        elif action == "listlimit":
+            limit_value = mikrotik_list_limit(conn)
+            conn.disconnect()
+            return {
+                "status": "success",
+                "brand": brand,
+                "action": action,
+                "limit": limit_value
+            }
+
+    # ============================
+    # H3C LIMITER
+    # ============================
+    elif brand == "H3C":
+
+        if action == "setlimit":
+            kbps = convert_to_kbps(data.limit)
+            commands = h3c_set_limit(kbps, wan_interface)
+            output = conn.send_config_set(commands)
+            conn.disconnect()
+            return {
+                "status": "success",
+                "brand": brand,
+                "action": action,
+                "limit": limit,
+                "commands_sent": commands,
+                "output": output
+            }
+
+        elif action == "unsetlimit":
+            kbps = convert_to_kbps(data.bandwidth)
+            commands = h3c_unlimit(kbps, wan_interface)
+            output = conn.send_config_set(commands)
+            conn.disconnect()
+            return {
+                "status": "success",
+                "brand": brand,
+                "action": action,
+                "commands_sent": commands,
+                "output": output
+            }
+
+        elif action == "listlimit":
+            limit_value = h3c_list_limit(conn, wan_interface)
+            conn.disconnect()
+            return {
+                "status": "success",
+                "brand": brand,
+                "action": action,
+                "limit": limit_value
+            }
+
+    # ============================
+    # BRAND NOT FOUND
+    # ============================
+    conn.disconnect()
+    return {
+        "status": "failed",
+        "message": "Brand not detected"
+    }
+
+
+# ============================================================
+# FASTAPI ENDPOINT
+# ============================================================
+
+@app.post("/post-smartcpe-limit")
+def postSmartCpeLimit(data: postSmartCpeLimiter):
+    return execute_limit(data)
