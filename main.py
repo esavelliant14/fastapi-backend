@@ -2142,7 +2142,7 @@ def postSmartCpe(data: postSmartCpe):
         return {
             "status": "success",
             "action": data.action,
-            "website": website_value,
+            "website": data.website,
             "blocked_domains": domains
         }
 
