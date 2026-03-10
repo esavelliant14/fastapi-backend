@@ -2256,7 +2256,7 @@ def mikrotik_list_qos(conn):
 def h3c_zoom_qos(interface, comment):
     return [
         # === ZOOM RULES (SUDAH ADA) ===
-        "acl number 3000",
+        f"acl advanced name SMARTCPE_ACL_{comment.upper()}",
         "rule 10 permit tcp destination-port eq 3478",
         "rule 20 permit tcp destination-port eq 3479",
         "rule 30 permit tcp destination-port eq 5090",
@@ -2267,24 +2267,13 @@ def h3c_zoom_qos(interface, comment):
         "rule 80 permit udp destination-port eq 5090",
         "rule 90 permit udp destination-port eq 5091",
         "rule 100 permit udp destination-port range 8801 8810",
-        "quit",
 
-        f"qos classifier {comment} operator or",
-        "if-match acl 3000",
-        "quit",
+        f"qos classifier SmartCPE_CLASS_{comment.upper()} operator and",
+        f"if-match acl name SmartCPE_ACL_{comment.upper()}",
 
-        f"qos behavior {comment}_BEHAVIOR",
-        "priority 5",
-        "quit",
 
-        f"qos policy {comment}_POLICY",
-        f"classifier {comment} behavior {comment}_BEHAVIOR",
-        "quit",
-
-        f"interface {interface}",
-        f"qos apply policy {comment}_POLICY inbound",
-        "quit"
-    ]
+        f"qos policy QOS_GLOBAL",
+        f"classifier SmartCPE_CLASS_{comment.upper()} behavior behavior_priority" ]
 
 
 def h3c_gmeet_qos(interface, comment):
@@ -2303,15 +2292,37 @@ def h3c_teams_qos(interface, comment):
 
 def h3c_unqos(interface, comment):
     return [
-        f"interface {interface}",
-        f"undo qos apply policy {comment}_POLICY inbound",
-        "quit",
 
-        f"undo qos policy {comment}_POLICY",
-        f"undo qos behavior {comment}_BEHAVIOR",
-        f"undo qos classifier {comment}",
-        "undo acl 3000"
+        f"qos policy QOS_GLOBAL",
+        f"undo classifier SmartCPE_CLASS_{comment.upper()}",
+        f"undo acl advanced name SmartCPE_ACL_{comment.upper()}"
     ]
+
+def h3c_list_qos(conn):
+    # Jalankan command persis seperti yang lu minta
+    cmd = 'display current-configuration by include QOS_GLOBAL'
+    output = conn.send_command(cmd)
+
+    lines = output.split("\n")
+    results = []
+
+    for line in lines:
+        line = line.strip()
+
+        # cari baris classifier yang mengandung SmartCPE_CLASS_
+        if "SmartCPE_CLASS_" in line:
+            # ambil bagian setelah prefix
+            clean = line.split("SmartCPE_CLASS_")[1]
+
+            # ambil kata pertama saja (nama service)
+            clean = clean.split()[0]
+
+            # lowercase
+            clean = clean.lower()
+
+            results.append(clean)
+
+    return results
 
 
 # ============================================================
@@ -2335,14 +2346,14 @@ def get_service_commands(brand, service, action, wan_interface, lan_interface, b
     # H3C
     if brand == "H3C":
         if action == "unqos":
-            return h3c_unqos(lan_interface, comment)
+            return h3c_unqos(wan_interface, comment)
 
         if service == "zoom":
-            return h3c_zoom_qos(lan_interface, comment)
+            return h3c_zoom_qos(wan_interface, comment)
         if service == "gmeet":
-            return h3c_gmeet_qos(lan_interface, comment)
+            return h3c_gmeet_qos(wan_interface, comment)
         if service == "teams":
-            return h3c_teams_qos(lan_interface, comment)
+            return h3c_teams_qos(wan_interface, comment)
 
     return [f"# UNKNOWN SERVICE {service}"]
 
@@ -2363,7 +2374,7 @@ def execute_qos(data: postSmartCpeQos):
     device_type = DEVICE_MAP.get(brand)
     if not device_type:
         return {"status": "failed", "message": "Unknown brand"}
-        
+
     conn = ConnectHandler(
         device_type=device_type,
         ip=data.ip,
@@ -2384,11 +2395,18 @@ def execute_qos(data: postSmartCpeQos):
                 "action": "listqos",
                 "qos_list": qos_list
             }
+        if brand == "H3C":
+            qos_list = h3c_list_qos(conn)
+            return {
+                "status": "success",
+                "action": "listqos",
+                "qos_list": qos_list
+            }
         else:
             conn.disconnect()
             return {
                 "status": "failed",
-                "message": "listqos only supported for Mikrotik"
+                "message": "listqos only supported for Mikrotik & H3C"
             }
 
     commands = get_service_commands(
